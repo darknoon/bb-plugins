@@ -57,6 +57,11 @@ type Block = {
   index: number;
   base: number;
 };
+type PortConfig = {
+  portBase: number;
+  blockSize: number;
+  blockCount: number;
+};
 type Assignment = {
   environmentId: string;
   port: number;
@@ -105,23 +110,41 @@ async function processCommand(pid: number) {
 
 // Ports are handed out a block at a time, not one at a time: a worktree runs more than one
 // service, and a block keeps that worktree's ports together and stable. Worktree k owns
-// PORT_BASE + k*BLOCK_SIZE through +BLOCK_SIZE-1, written in commands as `{port}` for the base
+// portBase + k*blockSize through +blockSize-1, written in commands as `{port}` for the base
 // and `{port+N}` for the Nth slot.
-//
-// Keep the initial range deliberately bounded. A future settings surface can make the base,
-// block size, and count configurable without changing the allocation model.
-const PORT_BASE = 5900;
-const BLOCK_SIZE = 10;
-const BLOCK_COUNT = 9;
-const blockBase = (index: number) => PORT_BASE + index * BLOCK_SIZE;
-const LAST_PORT = blockBase(BLOCK_COUNT - 1) + BLOCK_SIZE - 1;
+const DEFAULT_PORT_BASE = 5910;
+const DEFAULT_BLOCK_SIZE = 10;
+const DEFAULT_BLOCK_COUNT = 9;
+const blockBase = (config: PortConfig, index: number) => config.portBase + index * config.blockSize;
+const lastPort = (config: PortConfig) => blockBase(config, config.blockCount - 1) + config.blockSize - 1;
 const PORT_PLACEHOLDER = /\{port(?:\+(\d+))?\}/g;
+
+function parsePortConfig(values: { portBase: string; blockSize: string; blockCount: string }) {
+  const config: PortConfig = {
+    portBase: Number(values.portBase),
+    blockSize: Number(values.blockSize),
+    blockCount: Number(values.blockCount),
+  };
+  if (!Number.isInteger(config.portBase) || config.portBase < 1024 || config.portBase > 65535) {
+    return { config: null, error: "First port must be an integer from 1024 to 65535." };
+  }
+  if (!Number.isInteger(config.blockSize) || config.blockSize < 1 || config.blockSize > 100) {
+    return { config: null, error: "Ports per worktree must be an integer from 1 to 100." };
+  }
+  if (!Number.isInteger(config.blockCount) || config.blockCount < 1 || config.blockCount > 100) {
+    return { config: null, error: "Worktree count must be an integer from 1 to 100." };
+  }
+  if (lastPort(config) > 65535) {
+    return { config: null, error: "The configured port blocks extend past port 65535." };
+  }
+  return { config, error: null };
+}
 
 // `{port}` is the block base, `{port+N}` the Nth slot. An offset past the end of the block would
 // land in the next worktree's ports, so it fails rather than silently overrunning.
-function expandPorts(template: string, base: number) {
+function expandPorts(template: string, base: number, blockSize: number) {
   const offsets = Array.from(template.matchAll(PORT_PLACEHOLDER), (match) => (match[1] ? Number(match[1]) : 0));
-  const overrun = offsets.find((offset) => offset >= BLOCK_SIZE) ?? null;
+  const overrun = offsets.find((offset) => offset >= blockSize) ?? null;
   const command = template.replaceAll(PORT_PLACEHOLDER, (_match, offset?: string) =>
     String(base + (offset ? Number(offset) : 0)));
   return { command, ports: offsets.map((offset) => base + offset), overrun };
@@ -130,29 +153,30 @@ function expandPorts(template: string, base: number) {
 // A block is held for the environment's lifetime, not just while a server runs, so that a
 // worktree's ports never move under it. That means reclaiming blocks whose worktree is gone —
 // otherwise churning through worktrees exhausts the range with nothing running.
-async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>) {
+async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig) {
   const prior = await bb.storage.kv.get<Block>(`block:${environmentId}`);
-  if (prior && prior.index < BLOCK_COUNT) return prior;
+  if (prior && prior.index < config.blockCount && prior.base === blockBase(config, prior.index)) return prior;
   const live = new Set((await projectEnvironments(bb, null)).map((environment) => environment.id));
   const held = new Set<number>();
   for (const key of await bb.storage.kv.list("block:")) {
     const block = await bb.storage.kv.get<Block>(key);
     if (!block) continue;
-    if (live.has(block.environmentId)) held.add(block.index);
+    const matchesConfig = block.index < config.blockCount && block.base === blockBase(config, block.index);
+    if (live.has(block.environmentId) && matchesConfig) held.add(block.index);
     else await bb.storage.kv.delete(key);
   }
   // A server started outside the plugin holds no block record, so a block is also taken if
   // anything is already listening inside it. Without this the first allocation after any manual
   // `pnpm dev --port` hands out a block that is already half occupied and fails on the clash.
-  for (let index = 0; index < BLOCK_COUNT; index += 1) {
-    const base = blockBase(index);
-    const inUse = Array.from({ length: BLOCK_SIZE }, (_, slot) => base + slot).some((port) => occupied.has(port));
+  for (let index = 0; index < config.blockCount; index += 1) {
+    const base = blockBase(config, index);
+    const inUse = Array.from({ length: config.blockSize }, (_, slot) => base + slot).some((port) => occupied.has(port));
     if (inUse) held.add(index);
   }
-  const index = Array.from({ length: BLOCK_COUNT }, (_, candidate) => candidate)
+  const index = Array.from({ length: config.blockCount }, (_, candidate) => candidate)
     .find((candidate) => !held.has(candidate));
   if (index === undefined) return null;
-  const block: Block = { environmentId, index, base: blockBase(index) };
+  const block: Block = { environmentId, index, base: blockBase(config, index) };
   await bb.storage.kv.set(`block:${environmentId}`, block);
   return block;
 }
@@ -361,6 +385,27 @@ function option(argv: string[], name: string) {
 }
 
 export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    portBase: {
+      type: "string",
+      label: "First port",
+      description: "Base port of the first worktree block.",
+      default: String(DEFAULT_PORT_BASE),
+    },
+    blockSize: {
+      type: "string",
+      label: "Ports per worktree",
+      description: "Number of consecutive ports reserved for each worktree.",
+      default: String(DEFAULT_BLOCK_SIZE),
+    },
+    blockCount: {
+      type: "string",
+      label: "Worktree blocks",
+      description: "Maximum number of worktrees that can hold a port block.",
+      default: String(DEFAULT_BLOCK_COUNT),
+    },
+  });
+
   bb.rpc.register(rpcContract, {
     list: async ({ projectId }) => ({ servers: await listServers(bb, projectId), scannedAt: Date.now() }),
   });
@@ -382,6 +427,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (!context.threadId) return { exitCode: 2, stderr: "Start requires a BB thread.\n" };
       const commandTemplate = option(argv, "--command");
       if (!commandTemplate) return { exitCode: 2, stderr: "Missing --command.\n" };
+      const parsedConfig = parsePortConfig(await settings.get());
+      if (!parsedConfig.config) return { exitCode: 2, stderr: `${parsedConfig.error}\n` };
+      const config = parsedConfig.config;
 
       const projects = await bb.sdk.projects.list({ include: "threads" });
       const project = projects.find((row) => row.id === context.projectId);
@@ -395,17 +443,17 @@ export default async function plugin(bb: BbPluginApi) {
       // base — offsets still resolve relative to it, but nothing is reserved or remembered.
       const base = Number.isInteger(requested) && requested > 0
         ? requested
-        : (await assignBlock(bb, thread.environmentId, occupied))?.base ?? null;
+        : (await assignBlock(bb, thread.environmentId, occupied, config))?.base ?? null;
       if (base === null) {
         return {
           exitCode: 1,
-          stderr: `All ${BLOCK_COUNT} port blocks (${PORT_BASE}-${LAST_PORT}) belong to live worktrees.`
+          stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) belong to live worktrees.`
             + ` Delete a worktree to release its block or widen the plugin's port range.\n`,
         };
       }
-      const { command, ports, overrun } = expandPorts(commandTemplate, base);
+      const { command, ports, overrun } = expandPorts(commandTemplate, base, config.blockSize);
       if (overrun !== null) {
-        return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${BLOCK_SIZE}-port block.\n` };
+        return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${config.blockSize}-port block.\n` };
       }
       const clash = ports.find((candidate) => occupied.has(candidate));
       if (clash !== undefined) return { exitCode: 1, stderr: `Port ${clash} is already in use.\n` };
@@ -426,7 +474,7 @@ export default async function plugin(bb: BbPluginApi) {
       } satisfies Assignment);
       return {
         exitCode: 0,
-        stdout: `Started ${command}\nBlock: ${base}-${base + BLOCK_SIZE - 1}\nPorts: ${ports.join(", ")}\n`
+        stdout: `Started ${command}\nBlock: ${base}-${base + config.blockSize - 1}\nPorts: ${ports.join(", ")}\n`
           + `Terminal: ${terminal.id}\n`,
       };
     },

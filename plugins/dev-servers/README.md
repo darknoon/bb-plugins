@@ -13,6 +13,20 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 Use `{port+1}` through `{port+9}` for additional services in the same
 worktree.
 
+## Port blocks
+
+The defaults allocate nine 10-port blocks starting at 5910. Configure the
+first port, ports per worktree, and worktree-block count in BB's plugin
+settings, or from the CLI:
+
+```sh
+bb plugin config dev-servers set portBase 5910
+bb plugin config dev-servers set blockSize 10
+bb plugin config dev-servers set blockCount 9
+```
+
+Changing the range invalidates saved allocations that no longer match it.
+
 ## Current scope
 
 - Discovery runs on the BB server host and currently uses macOS `lsof` and
