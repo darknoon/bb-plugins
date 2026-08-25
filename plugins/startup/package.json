@@ -1,0 +1,31 @@
+{
+  "name": "bb-plugin-startup",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.39",
+    "bbPluginSdk": ">=0.4.8"
+  },
+  "bb": {
+    "name": "Startup",
+    "description": "Manage automatic bb startup on macOS hosts.",
+    "branding": {
+      "icon": "Zap"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "host": "./host.ts",
+    "skills": [
+      "skills"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.8",
+    "@types/node": "^22.0.0",
+    "react": "^19.2.0",
+    "typescript": "^5.7.0"
+  }
+}

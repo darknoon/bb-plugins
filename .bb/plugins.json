@@ -3,6 +3,7 @@
   "schemaVersion": 1,
   "name": "darknoon-bb-plugins",
   "plugins": [
-    { "name": "dev-servers", "source": "./plugins/dev-servers" }
+    { "name": "dev-servers", "source": "./plugins/dev-servers" },
+    { "name": "startup", "source": "./plugins/startup" }
   ]
 }
