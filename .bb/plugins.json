@@ -1,0 +1,8 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "darknoon-bb-plugins",
+  "plugins": [
+    { "name": "dev-servers", "source": "./plugins/dev-servers" }
+  ]
+}
