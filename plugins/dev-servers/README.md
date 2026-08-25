@@ -1,8 +1,8 @@
 # Dev Servers for BB
 
 Discover HTML development servers running in BB worktrees and open them from
-BB's left sidebar. Each row shows the project, branch, port, process, and its
-associated BB terminal when one can be identified.
+BB's left sidebar. Each row shows the project, worktree, linked chat, port,
+process, and its associated BB terminal when one can be identified.
 
 Agents can start a server in a BB terminal with a stable port block:
 

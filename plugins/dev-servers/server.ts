@@ -18,6 +18,7 @@ const serverSchema = z.object({
   processName: z.string(),
   command: z.string().nullable(),
   url: z.string().url().nullable(),
+  thread: z.object({ id: z.string(), title: z.string() }).nullable(),
   terminal: terminalSchema.nullable(),
   association: z.enum(["managed", "inferred", "external"]),
 });
@@ -37,6 +38,12 @@ type EnvironmentInfo = {
   branchName: string | null;
   path: string;
   hostId: string;
+  threads: Array<{
+    id: string;
+    title: string;
+    updatedAt: number;
+    archivedAt: number | null;
+  }>;
 };
 type Listener = {
   pid: number;
@@ -55,6 +62,7 @@ type Assignment = {
   port: number;
   terminalId: string;
   command: string;
+  threadId?: string;
 };
 type ProjectThread = { id: string; environmentId: string | null };
 
@@ -198,16 +206,38 @@ async function discoverListeners() {
 async function projectEnvironments(bb: BbPluginApi, projectId: string | null) {
   const projects = await bb.sdk.projects.list();
   const selected = projectId === null ? projects : projects.filter((row) => row.id === projectId);
-  const owners = new Map<string, { projectId: string; projectName: string }>();
+  const owners = new Map<string, {
+    projectId: string;
+    projectName: string;
+    threads: EnvironmentInfo["threads"];
+  }>();
   await Promise.all(selected.map(async (project) => {
     const [active, archived] = await Promise.all([
       bb.sdk.threads.list({ projectId: project.id, archived: false, includeHidden: true, limit: 1000 }),
       bb.sdk.threads.list({ projectId: project.id, archived: true, includeHidden: true, limit: 1000 }),
     ]);
     for (const thread of [...active, ...archived]) {
-      if (thread.environmentId) owners.set(thread.environmentId, { projectId: project.id, projectName: project.name });
+      if (!thread.environmentId || thread.visibility !== "visible") continue;
+      const owner = owners.get(thread.environmentId) ?? {
+        projectId: project.id,
+        projectName: project.name,
+        threads: [],
+      };
+      owner.threads.push({
+        id: thread.id,
+        title: thread.title ?? thread.titleFallback ?? "Untitled chat",
+        updatedAt: thread.updatedAt,
+        archivedAt: thread.archivedAt,
+      });
+      owners.set(thread.environmentId, owner);
     }
   }));
+  for (const owner of owners.values()) {
+    owner.threads.sort((a, b) => {
+      if ((a.archivedAt === null) !== (b.archivedAt === null)) return a.archivedAt === null ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+  }
   const environments = await Promise.all(Array.from(owners.keys()).map((environmentId) => bb.sdk.environments.get({ environmentId })));
   return environments.flatMap((environment) => {
     const owner = owners.get(environment.id);
@@ -275,6 +305,9 @@ async function listServers(bb: BbPluginApi, projectId: string | null) {
       processName: listener.processName,
       command: listener.command,
       hostId: environment.hostId,
+      thread: (assignment?.threadId
+        ? environment.threads.find((thread) => thread.id === assignment.threadId)
+        : null) ?? environment.threads[0] ?? null,
       terminal: association.terminal ? {
         id: association.terminal.id,
         title: association.terminal.title,
@@ -389,6 +422,7 @@ export default async function plugin(bb: BbPluginApi) {
         port,
         terminalId: terminal.id,
         command,
+        threadId: context.threadId,
       } satisfies Assignment);
       return {
         exitCode: 0,

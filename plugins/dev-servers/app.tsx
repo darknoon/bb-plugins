@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
+import { FolderGitTwoIcon, BubbleChatIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
 
@@ -15,12 +17,14 @@ type Server = {
   processName: string;
   command: string | null;
   url: string | null;
+  thread: { id: string; title: string } | null;
   terminal: { id: string; title: string; status: string } | null;
   association: "managed" | "inferred" | "external";
 };
 
 function DevServersPanel() {
   const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
   const [servers, setServers] = useState<Server[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,8 +88,16 @@ function DevServersPanel() {
                   <span className="mt-1.5 size-2 shrink-0 rounded-full bg-foreground" aria-label="Running" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-4">
-                      <div className="truncate text-sm font-medium" title={server.branchName ?? server.environmentName}>
-                        {server.branchName ?? server.environmentName}
+                      <div
+                        className="flex min-w-0 items-center gap-1.5 text-sm font-medium"
+                        title={server.branchName ?? server.environmentName}
+                      >
+                        <HugeiconsIcon
+                          icon={FolderGitTwoIcon}
+                          className="size-4 shrink-0 text-subtle-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{server.branchName ?? server.environmentName}</span>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <code className="text-base font-medium tabular-nums">:{server.port}</code>
@@ -100,10 +112,25 @@ function DevServersPanel() {
                         )}
                       </div>
                     </div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {server.terminal
-                        ? `Terminal · ${server.terminal.title}`
-                        : "No BB terminal"}
+                    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
+                      {server.thread ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-6 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          title={`Open chat: ${server.thread.title}`}
+                          onClick={() => navigate.toThread(server.thread!.id)}
+                        >
+                          <HugeiconsIcon icon={BubbleChatIcon} className="size-3.5 shrink-0" aria-hidden="true" />
+                          <span className="truncate">{server.thread.title}</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No chat found</span>
+                      )}
+                      <span className="truncate text-xs text-muted-foreground">
+                        {server.terminal
+                          ? `Terminal · ${server.terminal.title}`
+                          : "No BB terminal"}
+                      </span>
                     </div>
                     <details className="mt-2 text-xs">
                       <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
