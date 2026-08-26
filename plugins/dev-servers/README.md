@@ -1,8 +1,14 @@
 # Dev Servers for BB
 
-Discover HTML development servers running in BB worktrees and open them from
-BB's left sidebar. Each row shows the project, worktree, linked chat, port,
-process, and its associated BB terminal when one can be identified.
+Discover HTML development servers running in BB worktrees and preview them in
+BB. Each row shows the project, worktree, linked chat, port, process, and its
+associated BB terminal when one can be identified.
+
+- In a thread, choose **New tab → Open dev server** to pick a running server
+  and replace the chooser with a live preview and URL bar in that panel tab.
+- On the Dev Servers page, **Open** navigates to the server's linked chat and
+  opens that server beside it. The adjacent menu copies the URL or opens it in
+  an external browser.
 
 Agents can start a server in a BB terminal with a stable port block:
 
@@ -32,8 +38,12 @@ Changing the range invalidates saved allocations that no longer match it.
 - Discovery runs on the BB server host and currently uses macOS `lsof` and
   `ps`.
 - Only listeners serving HTML from known BB project environments are shown.
-- Open links use BB Connect. The viewer must be signed into the BB owner's
-  account.
+- When BB is opened through a Tailscale `*.ts.net` origin and Tailscale Serve
+  already exposes a server's HTTPS port, previews use that Tailnet URL. This
+  avoids a second sign-in and keeps access inside the Tailnet.
+- Other clients fall back to BB Connect. The viewer must be signed into the BB
+  owner's account. A server that sets restrictive iframe headers may still
+  require the external-browser action.
 
 ## Install
 

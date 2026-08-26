@@ -1,9 +1,34 @@
-import { useCallback, useEffect, useState } from "react";
-import { definePluginApp, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
-import { FolderGitTwoIcon, BubbleChatIcon } from "@hugeicons/core-free-icons";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  definePluginApp,
+  useBbNavigate,
+  useRpc,
+  type PluginThreadHeaderActionProps,
+  type PluginThreadPanelProps,
+} from "@get-bb/plugin-sdk/app";
+import {
+  ArrowDown01Icon,
+  ArrowLeft01Icon,
+  BubbleChatIcon,
+  Copy01Icon,
+  FolderGitTwoIcon,
+  LinkSquare01Icon,
+  ReloadIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+const PANEL_ACTION_ID = "dev-server";
+const PENDING_OPEN_PREFIX = "bb-dev-servers:pending-open:";
+const PENDING_OPEN_TTL_MS = 30_000;
 
 type Server = {
   projectId: string;
@@ -16,15 +41,93 @@ type Server = {
   pid: number;
   processName: string;
   command: string | null;
-  url: string | null;
+  connectUrl: string | null;
+  tailnetUrl: string | null;
   thread: { id: string; title: string } | null;
   terminal: { id: string; title: string; status: string } | null;
   association: "managed" | "inferred" | "external";
 };
 
-function DevServersPanel() {
+type ServerIdentity = {
+  environmentId: string;
+  port: number;
+};
+
+type PendingPanelOpen = {
+  createdAt: number;
+  title: string;
+  params: ServerIdentity;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseServerIdentity(value: unknown): ServerIdentity | null {
+  if (!isRecord(value)) return null;
+  return typeof value.environmentId === "string" && Number.isInteger(value.port)
+    ? { environmentId: value.environmentId, port: value.port as number }
+    : null;
+}
+
+function serverIdentity(server: Server): ServerIdentity {
+  return { environmentId: server.environmentId, port: server.port };
+}
+
+function serverTitle(server: Server) {
+  return `${server.branchName ?? server.environmentName} · :${server.port}`;
+}
+
+function serverUrl(server: Server) {
+  const isTailnetOrigin = window.location.protocol === "https:"
+    && window.location.hostname.endsWith(".ts.net");
+  return isTailnetOrigin && server.tailnetUrl
+    ? server.tailnetUrl
+    : server.connectUrl ?? server.tailnetUrl;
+}
+
+function pendingOpenKey(threadId: string) {
+  return `${PENDING_OPEN_PREFIX}${threadId}`;
+}
+
+function savePendingOpen(threadId: string, pending: PendingPanelOpen) {
+  try {
+    window.sessionStorage.setItem(pendingOpenKey(threadId), JSON.stringify(pending));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function takePendingOpen(threadId: string): PendingPanelOpen | null {
+  try {
+    const key = pendingOpenKey(threadId);
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(key);
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value) || typeof value.createdAt !== "number" || typeof value.title !== "string") {
+      return null;
+    }
+    const params = parseServerIdentity(value.params);
+    if (!params || Date.now() - value.createdAt > PENDING_OPEN_TTL_MS) return null;
+    return { createdAt: value.createdAt, title: value.title, params };
+  } catch {
+    return null;
+  }
+}
+
+async function copyUrl(url: string) {
+  try {
+    await navigator.clipboard.writeText(url);
+    toast.success("Dev server URL copied");
+  } catch {
+    toast.error("Could not copy the URL");
+  }
+}
+
+function useDevServers(projectId: string | null = null) {
   const rpc = useRpc<typeof rpcContract>();
-  const navigate = useBbNavigate();
   const [servers, setServers] = useState<Server[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,16 +136,303 @@ function DevServersPanel() {
     setLoading(true);
     setError(null);
     try {
-      const result = await rpc.call("list", { projectId: null });
+      const result = await rpc.call("list", { projectId });
       setServers(result.servers);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
     }
-  }, [rpc]);
+  }, [projectId, rpc]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  return { servers, loading, error, refresh };
+}
+
+function ServerChoice({
+  server,
+  currentThread,
+  onSelect,
+}: {
+  server: Server;
+  currentThread: boolean;
+  onSelect: (server: Server) => void;
+}) {
+  const url = serverUrl(server);
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-state-hover disabled:cursor-not-allowed disabled:opacity-50"
+      disabled={!url}
+      onClick={() => onSelect(server)}
+    >
+      <span className="size-2 shrink-0 rounded-full bg-foreground" aria-label="Running" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">
+            {server.branchName ?? server.environmentName}
+          </span>
+          {currentThread ? (
+            <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
+              Current chat
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+          {server.projectName}{server.thread ? ` · ${server.thread.title}` : " · No linked chat"}
+        </div>
+      </div>
+      <code className="shrink-0 text-sm font-medium tabular-nums">:{server.port}</code>
+    </button>
+  );
+}
+
+function DevServerPreview({ server, onBack }: { server: Server; onBack: () => void }) {
+  const [reloadKey, setReloadKey] = useState(0);
+  const [frameLoading, setFrameLoading] = useState(true);
+  const url = serverUrl(server);
+
+  useEffect(() => {
+    setFrameLoading(true);
+  }, [reloadKey, url]);
+
+  if (!url) {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-background">
+        <div className="flex h-11 shrink-0 items-center border-b border-border px-2">
+          <Button size="icon" variant="ghost" aria-label="Back to dev servers" onClick={onBack}>
+            <HugeiconsIcon icon={ArrowLeft01Icon} />
+          </Button>
+        </div>
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+          This server is running, but no secure preview URL is available.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-2">
+        <Button size="icon" variant="ghost" aria-label="Back to dev servers" onClick={onBack}>
+          <HugeiconsIcon icon={ArrowLeft01Icon} />
+        </Button>
+        <input
+          aria-label="Dev server URL"
+          className="h-8 min-w-0 flex-1 rounded-md border border-input bg-muted/50 px-3 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+          readOnly
+          value={url}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label="Copy dev server URL"
+          onClick={() => void copyUrl(url)}
+        >
+          <HugeiconsIcon icon={Copy01Icon} />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label="Reload dev server"
+          onClick={() => setReloadKey((value) => value + 1)}
+        >
+          <HugeiconsIcon icon={ReloadIcon} />
+        </Button>
+        <Button size="icon" variant="ghost" asChild>
+          <a href={url} target="_blank" rel="noreferrer" aria-label="Open dev server externally">
+            <HugeiconsIcon icon={LinkSquare01Icon} />
+          </a>
+        </Button>
+      </div>
+      <div className="relative min-h-0 flex-1 bg-muted/30">
+        {frameLoading ? (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+            Loading {serverTitle(server)}…
+          </div>
+        ) : null}
+        <iframe
+          key={`${url}:${reloadKey}`}
+          src={url}
+          title={`Dev server ${serverTitle(server)}`}
+          className="relative h-full w-full border-0 bg-background"
+          allow="clipboard-read; clipboard-write; fullscreen"
+          onLoad={() => setFrameLoading(false)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
+  const initialSelection = useRef(parseServerIdentity(params));
+  const [selected, setSelected] = useState<ServerIdentity | null>(initialSelection.current);
+  const { servers, loading, error, refresh } = useDevServers();
+  const selectedServer = selected
+    ? servers.find((server) => server.environmentId === selected.environmentId && server.port === selected.port) ?? null
+    : null;
+  const orderedServers = [...servers].sort((left, right) => {
+    const leftCurrent = left.thread?.id === threadId ? 0 : 1;
+    const rightCurrent = right.thread?.id === threadId ? 0 : 1;
+    return leftCurrent - rightCurrent
+      || left.projectName.localeCompare(right.projectName)
+      || (left.branchName ?? left.environmentName).localeCompare(right.branchName ?? right.environmentName)
+      || left.port - right.port;
+  });
+
+  if (selected && selectedServer) {
+    return <DevServerPreview server={selectedServer} onBack={() => setSelected(null)} />;
+  }
+
+  if (selected && loading) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
+        Finding dev server…
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
+        <div>
+          <div className="text-sm font-medium">Choose a dev server</div>
+          <div className="text-xs text-muted-foreground">
+            {loading ? "Scanning…" : `${servers.length} running`}
+          </div>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
+          Refresh
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {selected && !loading ? (
+          <div className="border-b border-border px-4 py-3 text-sm text-muted-foreground">
+            That dev server is no longer running. Choose another one.
+          </div>
+        ) : null}
+        {error ? <p className="px-4 py-3 text-sm text-destructive">{error}</p> : null}
+        {!loading && !error && servers.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            No running dev servers found.
+          </div>
+        ) : null}
+        {orderedServers.map((server) => (
+          <ServerChoice
+            key={`${server.environmentId}:${server.port}`}
+            server={server}
+            currentThread={server.thread?.id === threadId}
+            onSelect={(next) => setSelected(serverIdentity(next))}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DevServerPanelOpenBridge({ threadId }: PluginThreadHeaderActionProps) {
+  const navigate = useBbNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+
+    const tryOpen = () => {
+      if (cancelled) return;
+      const pending = takePendingOpen(threadId);
+      if (!pending) return;
+      const accepted = navigate.openThreadPanel({
+        actionId: PANEL_ACTION_ID,
+        title: pending.title,
+        params: pending.params,
+      });
+      if (!accepted && attempts < 5) {
+        attempts += 1;
+        savePendingOpen(threadId, pending);
+        timer = setTimeout(tryOpen, 50);
+      }
+    };
+
+    timer = setTimeout(tryOpen, 0);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [navigate, threadId]);
+
+  return null;
+}
+
+function ServerOpenButtons({ server, onOpen }: { server: Server; onOpen: (server: Server) => void }) {
+  const url = serverUrl(server);
+  const canOpenInPanel = Boolean(url && server.thread);
+
+  return (
+    <div
+      className="flex"
+      title={!url
+        ? "No secure preview URL is available"
+        : !server.thread
+          ? "No linked chat is available for the right-panel preview"
+          : undefined}
+    >
+      <Button
+        size="sm"
+        className="rounded-r-none px-3"
+        disabled={!canOpenInPanel}
+        onClick={() => onOpen(server)}
+      >
+        Open
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            className="w-7 rounded-l-none border-l border-background/20 px-0"
+            disabled={!url}
+            aria-label="More ways to open dev server"
+          >
+            <HugeiconsIcon icon={ArrowDown01Icon} className="size-3.5" aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" mobileTitle="Dev server actions">
+          <DropdownMenuItem onSelect={() => void copyUrl(url!)}>
+            <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+            Copy URL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => window.open(url!, "_blank", "noopener,noreferrer")}
+          >
+            <HugeiconsIcon icon={LinkSquare01Icon} aria-hidden="true" />
+            Open externally
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function DevServersPanel() {
+  const navigate = useBbNavigate();
+  const { servers, loading, error, refresh } = useDevServers();
+
+  const openInPanel = (server: Server) => {
+    const url = serverUrl(server);
+    if (!url || !server.thread) return;
+    const pending: PendingPanelOpen = {
+      createdAt: Date.now(),
+      title: serverTitle(server),
+      params: serverIdentity(server),
+    };
+    if (!savePendingOpen(server.thread.id, pending)) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    navigate.toThread(server.thread.id);
+  };
 
   const projects = Array.from(
     servers.reduce((groups, server) => {
@@ -101,15 +491,7 @@ function DevServersPanel() {
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <code className="text-base font-medium tabular-nums">:{server.port}</code>
-                        {server.url ? (
-                          <Button size="sm" asChild>
-                            <a href={server.url} target="_blank" rel="noreferrer">Open</a>
-                          </Button>
-                        ) : (
-                          <Button size="sm" disabled>
-                            Open
-                          </Button>
-                        )}
+                        <ServerOpenButtons server={server} onOpen={openInPanel} />
                       </div>
                     </div>
                     <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
@@ -169,5 +551,19 @@ export default definePluginApp((app) => {
     icon: "ServerStack01",
     path: "dev-servers",
     component: DevServersPanel,
+  });
+
+  app.slots.threadPanelAction({
+    id: PANEL_ACTION_ID,
+    title: "Open dev server",
+    icon: "ServerStack01",
+    layout: "flush",
+    component: DevServerPanel,
+  });
+
+  app.slots.experimental_threadHeaderAction({
+    id: "dev-server-open-bridge",
+    title: "Open dev server",
+    component: DevServerPanelOpenBridge,
   });
 });

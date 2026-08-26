@@ -17,7 +17,8 @@ const serverSchema = z.object({
   pid: z.number().int(),
   processName: z.string(),
   command: z.string().nullable(),
-  url: z.string().url().nullable(),
+  connectUrl: z.string().url().nullable(),
+  tailnetUrl: z.string().url().nullable(),
   thread: z.object({ id: z.string(), title: z.string() }).nullable(),
   terminal: terminalSchema.nullable(),
   association: z.enum(["managed", "inferred", "external"]),
@@ -71,6 +72,17 @@ type Assignment = {
 };
 type ProjectThread = { id: string; environmentId: string | null };
 
+type TailscaleStatus = {
+  BackendState?: string;
+  Self?: { DNSName?: string };
+};
+
+type TailscaleServeStatus = {
+  Web?: Record<string, {
+    Handlers?: Record<string, { Proxy?: string }>;
+  }>;
+};
+
 function projectThreads(project: unknown): ProjectThread[] {
   if (!project || typeof project !== "object" || !("threads" in project)) return [];
   return Array.isArray(project.threads) ? project.threads as ProjectThread[] : [];
@@ -106,6 +118,44 @@ async function processCommand(pid: number) {
   } catch {
     return null;
   }
+}
+
+function proxyTargetsLocalPort(proxy: string | undefined, port: number) {
+  if (!proxy) return false;
+  try {
+    const target = new URL(proxy);
+    const targetPort = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+    return target.protocol === "http:"
+      && ["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)
+      && targetPort === port;
+  } catch {
+    return false;
+  }
+}
+
+async function tailnetUrls(ports: Iterable<number>) {
+  const urls = new Map<number, string>();
+  try {
+    const tailscale = process.env.TAILSCALE_BIN ?? "tailscale";
+    const [{ stdout: statusOutput }, { stdout: serveOutput }] = await Promise.all([
+      execFile(tailscale, ["status", "--json"]),
+      execFile(tailscale, ["serve", "status", "--json"]),
+    ]);
+    const status = JSON.parse(statusOutput) as TailscaleStatus;
+    const serve = JSON.parse(serveOutput) as TailscaleServeStatus;
+    const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
+    if (status.BackendState !== "Running" || !dnsName || !serve.Web) return urls;
+
+    for (const port of ports) {
+      const rootHandler = serve.Web[`${dnsName}:${port}`]?.Handlers?.["/"];
+      if (proxyTargetsLocalPort(rootHandler?.Proxy, port)) {
+        urls.set(port, `https://${dnsName}:${port}`);
+      }
+    }
+  } catch {
+    // Tailscale is optional. BB Connect remains the cross-network fallback.
+  }
+  return urls;
 }
 
 // Ports are handed out a block at a time, not one at a time: a worktree runs more than one
@@ -348,13 +398,15 @@ async function listServers(bb: BbPluginApi, projectId: string | null) {
     portsByHost.set(server.hostId, ports);
   }
 
-  const urlByServer = new Map<string, string>();
+  const connectUrlByServer = new Map<string, string>();
+  const allPorts = new Set(Array.from(portsByHost.values()).flatMap((ports) => Array.from(ports)));
+  const tailnetUrlByPortPromise = tailnetUrls(allPorts);
   await Promise.all(Array.from(portsByHost, async ([hostId, ports]) => {
     try {
       const tunnel = await bb.hosts.ensureSharedPortTunnel(hostId);
       bb.hosts.declareSharedPorts(hostId, Array.from(ports));
       for (const port of ports) {
-        urlByServer.set(`${hostId}:${port}`, `https://${tunnel.label}--${port}.${tunnel.baseDomain}`);
+        connectUrlByServer.set(`${hostId}:${port}`, `https://${tunnel.label}--${port}.${tunnel.baseDomain}`);
       }
     } catch (cause) {
       // Discovery currently runs on the BB server itself. Older server-host Connect setups do not
@@ -363,18 +415,20 @@ async function listServers(bb: BbPluginApi, projectId: string | null) {
         try {
           const { stdout } = await execFile(process.env.BB_CLI ?? "bb", ["connect", "expose", String(port)]);
           const url = stdout.trim();
-          if (new URL(url).protocol === "https:") urlByServer.set(`${hostId}:${port}`, url);
+          if (new URL(url).protocol === "https:") connectUrlByServer.set(`${hostId}:${port}`, url);
         } catch (fallbackCause) {
           bb.log.warn(`Could not expose port ${port} on ${hostId}: ${fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause)} (native sharing: ${cause instanceof Error ? cause.message : String(cause)})`);
         }
       }));
     }
   }));
+  const tailnetUrlByPort = await tailnetUrlByPortPromise;
 
   return servers.map(({ hostId, ...server }) => {
     return {
       ...server,
-      url: urlByServer.get(`${hostId}:${server.port}`) ?? null,
+      connectUrl: connectUrlByServer.get(`${hostId}:${server.port}`) ?? null,
+      tailnetUrl: tailnetUrlByPort.get(server.port) ?? null,
     };
   });
 }
