@@ -74,3 +74,5 @@ The first handoff stops the foreground launcher and waits for both port 38886
 and its runtime record to be released before loading the LaunchAgent. Managed
 restarts use launchd's `KeepAlive`; crash-loop retries are throttled to 30
 seconds and launchd allows 30 seconds for a clean exit.
+When an already-loaded job is updated, launchd reads the new plist settings at
+the next login; the plugin does not `bootout` a running bb just to reload them.

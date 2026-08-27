@@ -224,8 +224,13 @@ fi
 export PATH="\${npx_path:h}:${SYSTEM_PATH}"
 
 ${releaseGuardShell(path.join(p.home, ".bb", "bb-app-runtime.json"))}
+waited_seconds=0
 while bb_is_running; do
+  if (( waited_seconds % 30 == 0 )); then
+    echo "waiting for port ${PORT} and the previous bb runtime to be released"
+  fi
   /bin/sleep 1
+  (( waited_seconds += 1 ))
 done
 
 if /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then
@@ -314,7 +319,7 @@ async function enable(): Promise<StartupStatus> {
     }
   }
   return status(launchctl.loaded
-    ? "LaunchAgent files updated. The current loaded job remains in place."
+    ? "LaunchAgent files updated. The loaded job keeps its current launchd settings until the next login."
     : "LaunchAgent staged. Run the managed handoff or log in again to start it.");
 }
 
