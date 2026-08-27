@@ -329,11 +329,22 @@ async function projectEnvironments(bb: BbPluginApi, projectId: string | null) {
 }
 
 async function terminalForPort(bb: BbPluginApi, environment: EnvironmentInfo, port: number, assignment: Assignment | null) {
-  const { sessions } = await bb.sdk.terminals.list({ scope: { kind: "environment", environmentId: environment.id } });
+  // Managed dev servers are created in a thread-scoped terminal. Looking only at the
+  // environment scope can never find that terminal, even though the terminal record carries
+  // the same environmentId. Resolve the persisted terminal ID directly before falling back to
+  // output-based inference for environment-scoped terminals started another way.
   if (assignment) {
-    const exact = sessions.find((terminal) => terminal.id === assignment.terminalId);
-    if (exact) return { terminal: exact, association: "managed" as const };
+    try {
+      const terminal = await bb.sdk.terminals.get({ terminalId: assignment.terminalId });
+      if (terminal.environmentId === environment.id) {
+        return { terminal, association: "managed" as const };
+      }
+    } catch {
+      // The saved terminal may have been closed or removed; inference can still find another one.
+    }
   }
+
+  const { sessions } = await bb.sdk.terminals.list({ scope: { kind: "environment", environmentId: environment.id } });
   for (const terminal of sessions.filter((row) => row.status === "running")) {
     const output = await bb.sdk.terminals.output({ terminalId: terminal.id, tailBytes: 24_000 });
     const text = output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8")).join("");
