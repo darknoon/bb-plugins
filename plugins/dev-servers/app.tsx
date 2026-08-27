@@ -176,7 +176,7 @@ function ServerChoice({
       disabled={!url}
       onClick={() => onSelect(server)}
     >
-      <span className="size-2 shrink-0 rounded-full bg-foreground" aria-label="Running" />
+      <span className="size-2 shrink-0 rounded-full bg-success" aria-label="Running" />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">
@@ -521,7 +521,7 @@ function DevServersPanel() {
             {project.servers.map((server) => (
               <div key={`${server.environmentId}:${server.port}`} className="border-b border-border px-4 py-3">
                 <div className="flex items-start gap-3">
-                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-foreground" aria-label="Running" />
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-success" aria-label="Running" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-4">
                       <div
