@@ -10,7 +10,10 @@ names a different enrolled host, in which case pass `--host <host-id>`.
 
 The same primary-host status and controls are available under BB Settings →
 Extensions → Startup. The page polls only while visible and rechecks when BB
-reconnects; it has no manual refresh button or persistent polling service.
+reconnects; it has no manual refresh button or persistent polling service. Its
+restart/update button checks visible and hidden threads immediately before the
+handoff. If any turns are running, it lists them and requires an explicit
+**Restart anyway** confirmation because the restart interrupts active turns.
 
 - `bb startup enable` installs the LaunchAgent and schedules an immediate
   managed handoff.

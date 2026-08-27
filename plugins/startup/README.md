@@ -18,7 +18,10 @@ That page polls the primary host while visible and shows LaunchAgent, current
 runtime, login-keychain, Tailscale Serve, and managed-command health. Its
 “Start bb at login” switch changes future-login startup without abruptly
 stopping the current bb process. If startup is installed but the current bb is
-unmanaged, the page offers a separate managed-restart action.
+unmanaged, the page offers a managed-restart action. When startup is healthy,
+the same action restarts and updates bb through `bb-app@latest`. It checks all
+visible and hidden threads immediately before scheduling; running threads are
+listed and require an explicit **Restart anyway** confirmation.
 
 The LaunchAgent runs after the macOS user logs in, so the login keychain is
 available to bb's providers. It also reconciles `tailscale serve --bg 38886`

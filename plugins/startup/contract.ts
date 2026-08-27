@@ -32,6 +32,13 @@ export const uiStatusSchema = z.object({
   status: startupStatusSchema,
 }).strict();
 
+const activeThreadSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  providerId: z.string(),
+  status: z.enum(["active", "starting", "stopping"]),
+}).strict();
+
 export const hostContract = defineRpcContract({
   status: { input: z.null(), output: startupStatusSchema },
   enable: { input: z.null(), output: startupStatusSchema },
@@ -47,9 +54,15 @@ export const rpcContract = defineRpcContract({
   enable: { input: z.null(), output: uiStatusSchema },
   disable: { input: z.null(), output: uiStatusSchema },
   handoff: {
-    input: z.null(),
-    output: z.object({ hostId: z.string(), scheduled: z.boolean(), delaySeconds: z.number().int() }).strict(),
+    input: z.object({ allowActive: z.boolean() }).strict(),
+    output: z.object({
+      hostId: z.string(),
+      scheduled: z.boolean(),
+      delaySeconds: z.number().int(),
+      activeThreads: z.array(activeThreadSchema),
+    }).strict(),
   },
 });
 
 export type StartupStatus = z.infer<typeof startupStatusSchema>;
+export type ActiveThread = z.infer<typeof activeThreadSchema>;

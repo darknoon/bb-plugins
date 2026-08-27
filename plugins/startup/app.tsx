@@ -4,7 +4,7 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { StartupStatus, rpcContract } from "./contract.js";
+import type { ActiveThread, StartupStatus, rpcContract } from "./contract.js";
 
 type StatusResult = { hostId: string; status: StartupStatus };
 type Action = "enable" | "disable" | "handoff";
@@ -40,6 +40,7 @@ function StartupSettings() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [restartWarning, setRestartWarning] = useState<ActiveThread[] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -69,14 +70,20 @@ function StartupSettings() {
     if (connection === "connected") void load();
   }, [connection, load]);
 
-  async function runAction(action: Action) {
+  async function runAction(action: Action, allowActive = false) {
     setBusy(action);
     setError(null);
     setNotice(null);
+    if (action !== "handoff") setRestartWarning(null);
     try {
       if (action === "handoff") {
-        const handoff = await rpc.call("handoff", null);
-        setNotice(`Restart scheduled in ${handoff.delaySeconds} seconds. BB will reconnect automatically.`);
+        const handoff = await rpc.call("handoff", { allowActive });
+        if (!handoff.scheduled) {
+          setRestartWarning(handoff.activeThreads);
+        } else {
+          setRestartWarning(null);
+          setNotice(`Restart scheduled in ${handoff.delaySeconds} seconds. BB will reconnect automatically.`);
+        }
       } else {
         const next = await rpc.call(action, null);
         setResult(next);
@@ -139,14 +146,56 @@ function StartupSettings() {
         </div>
       ) : null}
 
-      {status?.enabled && !status.runtimeManaged ? (
+      {restartWarning ? (
+        <div role="alert" className="space-y-3 rounded-lg border border-destructive p-4">
+          <div>
+            <div className="text-sm font-semibold text-foreground">
+              {restartWarning.length} running {restartWarning.length === 1 ? "thread" : "threads"} will be interrupted
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              Their history and workspace changes remain, but their current turns will stop.
+            </div>
+          </div>
+          <ul className="space-y-1 text-sm text-foreground">
+            {restartWarning.map((thread) => (
+              <li key={thread.id} className="break-words">
+                {thread.title} <span className="text-muted-foreground">({thread.providerId})</span>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void runAction("handoff", true)}
+              className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === "handoff" ? "Scheduling restart…" : "Restart anyway"}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => setRestartWarning(null)}
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {status?.enabled && restartWarning === null ? (
         <button
           type="button"
           disabled={busy !== null}
           onClick={() => void runAction("handoff")}
           className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {busy === "handoff" ? "Scheduling restart…" : "Restart under launchd"}
+          {busy === "handoff"
+            ? "Checking running threads…"
+            : status.runtimeManaged
+              ? "Restart and update BB"
+              : "Restart under launchd"}
         </button>
       ) : null}
 

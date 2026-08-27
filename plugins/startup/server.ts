@@ -1,5 +1,7 @@
 import type { BbPluginApi, PluginCliContext, PluginCliResult } from "@get-bb/plugin-sdk";
-import { hostContract, rpcContract, type StartupStatus } from "./contract.js";
+import { hostContract, rpcContract, type ActiveThread, type StartupStatus } from "./contract.js";
+
+const THREAD_PAGE_SIZE = 200;
 
 function usage(exitCode = 0): PluginCliResult {
   return {
@@ -67,6 +69,30 @@ export default async function plugin(bb: BbPluginApi) {
     return primaryHost(ctx.signal);
   }
 
+  async function activeThreads(signal?: AbortSignal): Promise<ActiveThread[]> {
+    const active: ActiveThread[] = [];
+    for (let offset = 0; ; offset += THREAD_PAGE_SIZE) {
+      const page = await bb.sdk.threads.list({
+        includeHidden: true,
+        limit: THREAD_PAGE_SIZE,
+        offset,
+        signal,
+      });
+      for (const thread of page) {
+        if (thread.status === "active" || thread.status === "starting" || thread.status === "stopping") {
+          active.push({
+            id: thread.id,
+            title: thread.title ?? thread.titleFallback ?? "Untitled thread",
+            providerId: thread.providerId,
+            status: thread.status,
+          });
+        }
+      }
+      if (page.length < THREAD_PAGE_SIZE) break;
+    }
+    return active;
+  }
+
   bb.rpc.register(rpcContract, {
     async status() {
       const hostId = await primaryHost();
@@ -80,10 +106,14 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = await primaryHost();
       return { hostId, status: await host.call("disable", null, { hostId }) };
     },
-    async handoff() {
+    async handoff({ allowActive }) {
       const hostId = await primaryHost();
+      const running = await activeThreads();
+      if (running.length > 0 && !allowActive) {
+        return { hostId, scheduled: false, delaySeconds: 8, activeThreads: running };
+      }
       const result = await host.call("handoff", { delaySeconds: 8 }, { hostId });
-      return { hostId, ...result };
+      return { hostId, ...result, activeThreads: running };
     },
   });
 
