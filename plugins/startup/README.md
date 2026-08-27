@@ -27,6 +27,8 @@ npx --yes --package=bb-app@latest bb startup status
 ```
 
 Confirm startup is enabled and any detected provider credential is accessible.
+The LaunchAgent is staged but deliberately not started while the foreground bb
+still owns the port.
 Then open **Settings → Extensions → Startup** and select **Restart under
 launchd**. On a fresh setup with no active turns, the CLI equivalent is:
 
@@ -67,3 +69,8 @@ listed and require an explicit **Restart anyway** confirmation.
 The LaunchAgent runs after the macOS user logs in, so the login keychain is
 available to bb's providers. It also reconciles `tailscale serve --bg 38886`
 when starting bb, if the Tailscale CLI is installed.
+
+The first handoff stops the foreground launcher and waits for both port 38886
+and its runtime record to be released before loading the LaunchAgent. Managed
+restarts use launchd's `KeepAlive`; crash-loop retries are throttled to 30
+seconds and launchd allows 30 seconds for a clean exit.

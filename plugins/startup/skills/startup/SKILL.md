@@ -17,8 +17,8 @@ handoff. If any turns are running, it lists them and requires an explicit
 
 - `bb startup enable` installs the LaunchAgent and schedules an immediate
   managed handoff.
-- `bb startup enable --no-handoff` stages and loads it without stopping the
-  currently running bb.
+- `bb startup enable --no-handoff` stages it without loading a competing job
+  while an unmanaged bb is still running.
 - `bb startup handoff` schedules the managed restart after a staged enable.
 - `bb startup disable` schedules launchd unload and removes only files carrying
   the plugin's ownership marker.

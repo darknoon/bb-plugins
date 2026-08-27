@@ -12,6 +12,7 @@ const LABEL = "app.getbb.startup";
 const PORT = 38886;
 const MARKER = "BBStartupPluginManaged";
 const SYSTEM_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+const HANDOFF_WAIT_SECONDS = 30;
 
 function uid(): number {
   if (!process.getuid) throw new Error("A POSIX user id is required");
@@ -60,6 +61,7 @@ function paths() {
     startupDir,
     script: path.join(startupDir, "start-bb.sh"),
     handoffScript: path.join(startupDir, "handoff.sh"),
+    handoffLog: path.join(home, ".bb", "logs", "startup.handoff.log"),
     keychainStatus: path.join(startupDir, "keychain-status"),
     plist: path.join(home, "Library", "LaunchAgents", `${LABEL}.plist`),
     stdout: path.join(home, ".bb", "logs", "startup.stdout.log"),
@@ -147,7 +149,7 @@ async function status(detail: string | null = null): Promise<StartupStatus> {
   return {
     supported: process.platform === "darwin",
     platform: process.platform,
-    enabled: files.exists && files.managed && launchctl.loaded,
+    enabled: files.exists && files.managed,
     loaded: launchctl.loaded,
     managed: files.managed,
     runtimeManaged: await runtimeIsManaged(launchctl.pid),
@@ -166,16 +168,125 @@ async function atomicWrite(file: string, contents: string, mode: number) {
   await rename(temporary, file);
 }
 
+async function commandExitCode(file: string, args: string[]): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { stdio: "ignore" });
+    child.once("error", () => resolve(null));
+    child.once("exit", (code) => resolve(code));
+  });
+}
+
+async function probeKeychain(file: string): Promise<void> {
+  const username = os.userInfo().username;
+  const query = ["find-generic-password", "-s", "Claude Code-credentials", "-a", username];
+  const present = await commandExitCode("/usr/bin/security", query);
+  if (present !== 0) {
+    await atomicWrite(file, "absent\n", 0o600);
+    return;
+  }
+  const accessible = await commandExitCode("/usr/bin/security", ["find-generic-password", "-w", "-s", "Claude Code-credentials", "-a", username]);
+  await atomicWrite(file, accessible === 0 ? "accessible\n" : `inaccessible:${accessible ?? "spawn"}\n`, 0o600);
+}
+
+function releaseGuardShell(runtimeFile: string): string {
+  return `bb_is_running() {
+  if /usr/sbin/lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -f ${shellQuote(runtimeFile)} ]]; then
+    runtime_pid=$(/usr/bin/plutil -extract pid raw -o - ${shellQuote(runtimeFile)} 2>/dev/null || true)
+    if [[ "$runtime_pid" =~ '^[0-9]+$' ]] && /bin/kill -0 "$runtime_pid" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}
+`;
+}
+
 function wrapperScript(npx: string, tailscale: string | null): string {
   const p = paths();
   const username = os.userInfo().username;
   const tailscaleCommand = tailscale ? `${shellQuote(tailscale)} serve --bg ${PORT} || true` : `echo "tailscale CLI not found; skipping Serve reconciliation" >&2`;
-  return `#!/bin/zsh\nset -u\numask 077\n\n# Managed by the bb Startup plugin. Never writes credential contents.\nnpx_path=${shellQuote(npx)}\nif [[ ! -x "$npx_path" ]]; then\n  npx_path=$(/bin/zsh -lic 'command -v npx' 2>/dev/null | /usr/bin/tail -n 1)\nfi\nif [[ -z "$npx_path" || ! -x "$npx_path" ]]; then\n  echo "the configured npx is unavailable and the login shell could not find a replacement" >&2\n  exit 127\nfi\nexport PATH="\${npx_path:h}:${SYSTEM_PATH}"\n\nif /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n  if /usr/bin/security find-generic-password -w -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n    echo accessible > ${shellQuote(p.keychainStatus)}\n  else\n    probe_exit=$?\n    echo "inaccessible:$probe_exit" > ${shellQuote(p.keychainStatus)}\n  fi\nelse\n  echo absent > ${shellQuote(p.keychainStatus)}\nfi\n/bin/chmod 600 ${shellQuote(p.keychainStatus)}\n\nwhile /usr/bin/curl --fail --silent --show-error --max-time 1 http://127.0.0.1:${PORT}/api/health >/dev/null 2>&1; do\n  /bin/sleep 2\ndone\n\n# Let the previous launcher remove its runtime record before claiming it.\n/bin/sleep 3\n${tailscaleCommand}\nexec "$npx_path" --yes bb-app@latest start\n`;
+  return `#!/bin/zsh
+set -u
+umask 077
+
+# Managed by the bb Startup plugin. Never writes credential contents.
+npx_path=${shellQuote(npx)}
+if [[ ! -x "$npx_path" ]]; then
+  npx_path=$(/bin/zsh -lic 'command -v npx' 2>/dev/null | /usr/bin/tail -n 1)
+fi
+if [[ -z "$npx_path" || ! -x "$npx_path" ]]; then
+  echo "the configured npx is unavailable and the login shell could not find a replacement" >&2
+  exit 127
+fi
+export PATH="\${npx_path:h}:${SYSTEM_PATH}"
+
+${releaseGuardShell(path.join(p.home, ".bb", "bb-app-runtime.json"))}
+while bb_is_running; do
+  /bin/sleep 1
+done
+
+if /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then
+  if /usr/bin/security find-generic-password -w -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then
+    echo accessible > ${shellQuote(p.keychainStatus)}
+  else
+    probe_exit=$?
+    echo "inaccessible:$probe_exit" > ${shellQuote(p.keychainStatus)}
+  fi
+else
+  echo absent > ${shellQuote(p.keychainStatus)}
+fi
+/bin/chmod 600 ${shellQuote(p.keychainStatus)}
+
+# Let the previous launcher remove its runtime record before claiming it.
+/bin/sleep 3
+${tailscaleCommand}
+exec "$npx_path" --yes bb-app@latest start
+`;
 }
 
 function launchAgentPlist(p: ReturnType<typeof paths>, nodeDirectory: string): string {
   const environmentPath = xmlEscape(`${nodeDirectory}:${SYSTEM_PATH}`);
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${LABEL}</string>\n  <key>${MARKER}</key>\n  <true/>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xmlEscape(p.script)}</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(p.home)}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>HOME</key>\n    <string>${xmlEscape(p.home)}</string>\n    <key>PATH</key>\n    <string>${environmentPath}</string>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(p.stdout)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(p.stderr)}</string>\n</dict>\n</plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LABEL}</string>
+  <key>${MARKER}</key>
+  <true/>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(p.script)}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(p.home)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>${xmlEscape(p.home)}</string>
+    <key>PATH</key>
+    <string>${environmentPath}</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(p.stdout)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(p.stderr)}</string>
+</dict>
+</plist>
+`;
 }
 
 async function enable(): Promise<StartupStatus> {
@@ -189,16 +300,12 @@ async function enable(): Promise<StartupStatus> {
   await mkdir(path.dirname(p.plist), { recursive: true, mode: 0o700 });
   await mkdir(path.dirname(p.stdout), { recursive: true, mode: 0o700 });
   await rm(p.handoffScript, { force: true });
-  try {
-    await chmod(p.keychainStatus, 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  await probeKeychain(p.keychainStatus);
   await atomicWrite(p.script, wrapperScript(npx, tailscale), 0o700);
   await atomicWrite(p.plist, launchAgentPlist(p, path.dirname(process.execPath)), 0o600);
   await run("/usr/bin/plutil", ["-lint", p.plist]);
   await run("/bin/launchctl", ["enable", `gui/${uid()}/${LABEL}`]);
-  if (!(await launchctlState()).loaded) await run("/bin/launchctl", ["bootstrap", `gui/${uid()}`, p.plist]);
+  const launchctl = await launchctlState();
   if (tailscale) {
     try {
       await run(tailscale, ["serve", "--bg", String(PORT)], 20_000);
@@ -206,7 +313,9 @@ async function enable(): Promise<StartupStatus> {
       // Startup remains valid; status reports the Serve failure.
     }
   }
-  return status("LaunchAgent installed. It waits for any existing bb process before taking ownership.");
+  return status(launchctl.loaded
+    ? "LaunchAgent files updated. The current loaded job remains in place."
+    : "LaunchAgent staged. Run the managed handoff or log in again to start it.");
 }
 
 async function disable(): Promise<StartupStatus> {
@@ -231,12 +340,35 @@ async function scheduleHandoff(delaySeconds: number) {
   if (process.platform !== "darwin") throw new Error("Managed handoff is supported only on macOS.");
   const p = paths();
   const current = await status();
-  if (!current.enabled) throw new Error("Startup is not enabled and loaded; run `bb startup enable --no-handoff` first.");
+  if (!current.enabled) throw new Error("Startup is not enabled; run `bb startup enable --no-handoff` first.");
   if (current.keychain.credentialPresent && current.keychain.accessible !== true) {
     throw new Error(`Refusing handoff because the LaunchAgent cannot read the existing Claude credential (${current.keychain.detail ?? "unknown error"}).`);
   }
   const npx = await requireRuntimeNpx();
-  const script = `#!/bin/zsh\ntrap '/bin/rm -f "$0"' EXIT\n/bin/sleep ${delaySeconds}\n${shellQuote(npx)} --yes bb-app@latest stop\n`;
+  const bootstrap = current.loaded
+    ? ""
+    : `/bin/launchctl bootstrap gui/${uid()} ${shellQuote(p.plist)}\n`;
+  const runtimeFile = path.join(p.home, ".bb", "bb-app-runtime.json");
+  const script = `#!/bin/zsh
+set -u
+umask 077
+trap '/bin/rm -f "$0"' EXIT
+exec >> ${shellQuote(p.handoffLog)} 2>&1
+/bin/sleep ${delaySeconds}
+if ! ${shellQuote(npx)} --yes bb-app@latest stop; then
+  echo "bb-app stop failed; refusing to start a second instance" >&2
+  exit 1
+fi
+${releaseGuardShell(runtimeFile)}
+deadline=$((SECONDS + ${HANDOFF_WAIT_SECONDS}))
+while bb_is_running && (( SECONDS < deadline )); do
+  /bin/sleep 1
+done
+if bb_is_running; then
+  echo "bb did not release port ${PORT} and its runtime record within ${HANDOFF_WAIT_SECONDS} seconds; refusing handoff" >&2
+  exit 1
+fi
+${bootstrap}`;
   await atomicWrite(p.handoffScript, script, 0o700);
   const child = spawn(p.handoffScript, [], { detached: true, stdio: "ignore" });
   child.unref();

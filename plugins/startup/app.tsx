@@ -129,7 +129,7 @@ function StartupSettings() {
       {status && result ? (
         <div className="rounded-lg border border-border bg-card px-4">
           <StateRow label="Host" value={result.hostId} />
-          <StateRow label="LaunchAgent" value={status.enabled ? "Enabled and loaded" : status.loaded ? "Disabled for future logins" : "Disabled"} detail={status.launchAgentPath} />
+          <StateRow label="LaunchAgent" value={status.enabled ? (status.loaded ? "Enabled and loaded" : "Enabled for next login; not loaded") : status.loaded ? "Disabled for future logins" : "Disabled"} detail={status.launchAgentPath} />
           <StateRow label="Current bb" value={status.runtimeManaged ? "Managed by launchd" : "Not managed by launchd"} />
           <StateRow
             label="Claude keychain"
