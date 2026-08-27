@@ -109,7 +109,7 @@ function StartupSettings() {
               onClick={() => void runAction(status.enabled ? "disable" : "enable")}
               className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${status.enabled ? "bg-primary" : "bg-input"} disabled:cursor-not-allowed disabled:opacity-50`}
             >
-              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${status.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+              <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${status.enabled ? "translate-x-5" : "translate-x-0"}`} />
             </button>
           ) : null}
         </div>
