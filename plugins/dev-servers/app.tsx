@@ -43,6 +43,7 @@ type Server = {
   command: string | null;
   connectUrl: string | null;
   tailnetUrl: string | null;
+  threadIds: string[];
   thread: { id: string; title: string } | null;
   terminal: { id: string; title: string; status: string } | null;
   association: "managed" | "inferred" | "external";
@@ -72,6 +73,10 @@ function parseServerIdentity(value: unknown): ServerIdentity | null {
 
 function serverIdentity(server: Server): ServerIdentity {
   return { environmentId: server.environmentId, port: server.port };
+}
+
+function isServerForThread(server: Server, threadId: string) {
+  return server.threadIds.includes(threadId);
 }
 
 function serverTitle(server: Server) {
@@ -163,7 +168,11 @@ function ServerChoice({
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-state-hover disabled:cursor-not-allowed disabled:opacity-50"
+      className={`flex w-full items-center gap-3 border-b border-border px-4 text-left transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-50 ${
+        currentThread
+          ? "bg-state-active py-4 hover:bg-state-active"
+          : "py-3 hover:bg-state-hover"
+      }`}
       disabled={!url}
       onClick={() => onSelect(server)}
     >
@@ -175,7 +184,7 @@ function ServerChoice({
           </span>
           {currentThread ? (
             <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
-              Current chat
+              Current thread
             </span>
           ) : null}
         </div>
@@ -273,14 +282,16 @@ function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
   const selectedServer = selected
     ? servers.find((server) => server.environmentId === selected.environmentId && server.port === selected.port) ?? null
     : null;
-  const orderedServers = [...servers].sort((left, right) => {
-    const leftCurrent = left.thread?.id === threadId ? 0 : 1;
-    const rightCurrent = right.thread?.id === threadId ? 0 : 1;
-    return leftCurrent - rightCurrent
-      || left.projectName.localeCompare(right.projectName)
+  const compareServers = (left: Server, right: Server) =>
+    left.projectName.localeCompare(right.projectName)
       || (left.branchName ?? left.environmentName).localeCompare(right.branchName ?? right.environmentName)
       || left.port - right.port;
-  });
+  const currentServers = servers
+    .filter((server) => isServerForThread(server, threadId))
+    .sort(compareServers);
+  const otherServers = servers
+    .filter((server) => !isServerForThread(server, threadId))
+    .sort(compareServers);
 
   if (selected && selectedServer) {
     return <DevServerPreview server={selectedServer} onBack={() => setSelected(null)} />;
@@ -319,14 +330,49 @@ function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
             No running dev servers found.
           </div>
         ) : null}
-        {orderedServers.map((server) => (
-          <ServerChoice
-            key={`${server.environmentId}:${server.port}`}
-            server={server}
-            currentThread={server.thread?.id === threadId}
-            onSelect={(next) => setSelected(serverIdentity(next))}
-          />
-        ))}
+        {currentServers.length > 0 ? (
+          <section aria-labelledby="current-thread-dev-servers">
+            <div
+              id="current-thread-dev-servers"
+              className="sticky top-0 z-10 border-b border-border bg-muted/90 px-4 py-2 text-xs font-medium text-foreground backdrop-blur"
+            >
+              Current thread
+            </div>
+            {currentServers.map((server) => (
+              <ServerChoice
+                key={`${server.environmentId}:${server.port}`}
+                server={server}
+                currentThread
+                onSelect={(next) => setSelected(serverIdentity(next))}
+              />
+            ))}
+          </section>
+        ) : !loading && !error && servers.length > 0 ? (
+          <div className="border-b border-border px-4 py-3">
+            <div className="text-xs font-medium text-foreground">Current thread</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              No dev server is running for this thread.
+            </div>
+          </div>
+        ) : null}
+        {otherServers.length > 0 ? (
+          <section aria-labelledby="other-dev-servers">
+            <div
+              id="other-dev-servers"
+              className="sticky top-0 z-10 border-b border-border bg-muted/90 px-4 py-2 text-xs font-medium text-muted-foreground backdrop-blur"
+            >
+              Other dev servers
+            </div>
+            {otherServers.map((server) => (
+              <ServerChoice
+                key={`${server.environmentId}:${server.port}`}
+                server={server}
+                currentThread={false}
+                onSelect={(next) => setSelected(serverIdentity(next))}
+              />
+            ))}
+          </section>
+        ) : null}
       </div>
     </div>
   );

@@ -19,6 +19,7 @@ const serverSchema = z.object({
   command: z.string().nullable(),
   connectUrl: z.string().url().nullable(),
   tailnetUrl: z.string().url().nullable(),
+  threadIds: z.array(z.string()),
   thread: z.object({ id: z.string(), title: z.string() }).nullable(),
   terminal: terminalSchema.nullable(),
   association: z.enum(["managed", "inferred", "external"]),
@@ -390,6 +391,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null) {
       processName: listener.processName,
       command: listener.command,
       hostId: environment.hostId,
+      threadIds: environment.threads.map((thread) => thread.id),
       thread: (assignment?.threadId
         ? environment.threads.find((thread) => thread.id === assignment.threadId)
         : null) ?? environment.threads[0] ?? null,
