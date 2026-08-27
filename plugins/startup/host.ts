@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const LABEL = "app.getbb.startup";
 const PORT = 38886;
 const MARKER = "BBStartupPluginManaged";
+const SYSTEM_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 function uid(): number {
   if (!process.getuid) throw new Error("A POSIX user id is required");
@@ -35,6 +36,20 @@ async function executable(candidates: string[]): Promise<string | null> {
     }
   }
   return null;
+}
+
+function runtimeNpxPath(): string {
+  return path.join(path.dirname(process.execPath), "npx");
+}
+
+async function requireRuntimeNpx(): Promise<string> {
+  const candidate = runtimeNpxPath();
+  const npx = await executable([candidate]);
+  if (npx) return npx;
+  throw new Error(
+    `npx was not found beside bb's Node executable. Checked ${candidate}. `
+    + "Start bb with a Node installation that includes npm/npx, then retry.",
+  );
 }
 
 function paths() {
@@ -128,7 +143,7 @@ async function status(detail: string | null = null): Promise<StartupStatus> {
   const p = paths();
   const files = await readManaged(p.plist);
   const launchctl = process.platform === "darwin" ? await launchctlState() : { loaded: false, pid: null };
-  const npx = await executable(["/opt/homebrew/bin/npx", "/usr/local/bin/npx", "/usr/bin/npx"]);
+  const npx = await executable([runtimeNpxPath()]);
   return {
     supported: process.platform === "darwin",
     platform: process.platform,
@@ -155,11 +170,11 @@ function wrapperScript(npx: string, tailscale: string | null): string {
   const p = paths();
   const username = os.userInfo().username;
   const tailscaleCommand = tailscale ? `${shellQuote(tailscale)} serve --bg ${PORT} || true` : `echo "tailscale CLI not found; skipping Serve reconciliation" >&2`;
-  return `#!/bin/zsh\nset -u\numask 077\n\n# Managed by the bb Startup plugin. Never writes credential contents.\nif /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n  if /usr/bin/security find-generic-password -w -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n    echo accessible > ${shellQuote(p.keychainStatus)}\n  else\n    probe_exit=$?\n    echo "inaccessible:$probe_exit" > ${shellQuote(p.keychainStatus)}\n  fi\nelse\n  echo absent > ${shellQuote(p.keychainStatus)}\nfi\n/bin/chmod 600 ${shellQuote(p.keychainStatus)}\n\nwhile /usr/bin/curl --fail --silent --show-error --max-time 1 http://127.0.0.1:${PORT}/api/health >/dev/null 2>&1; do\n  /bin/sleep 2\ndone\n\n# Let the previous launcher remove its runtime record before claiming it.\n/bin/sleep 3\n${tailscaleCommand}\nexec ${shellQuote(npx)} --yes bb-app@latest start\n`;
+  return `#!/bin/zsh\nset -u\numask 077\n\n# Managed by the bb Startup plugin. Never writes credential contents.\nnpx_path=${shellQuote(npx)}\nif [[ ! -x "$npx_path" ]]; then\n  npx_path=$(/bin/zsh -lic 'command -v npx' 2>/dev/null | /usr/bin/tail -n 1)\nfi\nif [[ -z "$npx_path" || ! -x "$npx_path" ]]; then\n  echo "the configured npx is unavailable and the login shell could not find a replacement" >&2\n  exit 127\nfi\nexport PATH="\${npx_path:h}:${SYSTEM_PATH}"\n\nif /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n  if /usr/bin/security find-generic-password -w -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then\n    echo accessible > ${shellQuote(p.keychainStatus)}\n  else\n    probe_exit=$?\n    echo "inaccessible:$probe_exit" > ${shellQuote(p.keychainStatus)}\n  fi\nelse\n  echo absent > ${shellQuote(p.keychainStatus)}\nfi\n/bin/chmod 600 ${shellQuote(p.keychainStatus)}\n\nwhile /usr/bin/curl --fail --silent --show-error --max-time 1 http://127.0.0.1:${PORT}/api/health >/dev/null 2>&1; do\n  /bin/sleep 2\ndone\n\n# Let the previous launcher remove its runtime record before claiming it.\n/bin/sleep 3\n${tailscaleCommand}\nexec "$npx_path" --yes bb-app@latest start\n`;
 }
 
-function launchAgentPlist(p: ReturnType<typeof paths>): string {
-  const environmentPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+function launchAgentPlist(p: ReturnType<typeof paths>, nodeDirectory: string): string {
+  const environmentPath = xmlEscape(`${nodeDirectory}:${SYSTEM_PATH}`);
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${LABEL}</string>\n  <key>${MARKER}</key>\n  <true/>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xmlEscape(p.script)}</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(p.home)}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>HOME</key>\n    <string>${xmlEscape(p.home)}</string>\n    <key>PATH</key>\n    <string>${environmentPath}</string>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>${xmlEscape(p.stdout)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xmlEscape(p.stderr)}</string>\n</dict>\n</plist>\n`;
 }
 
@@ -168,8 +183,7 @@ async function enable(): Promise<StartupStatus> {
   const p = paths();
   const existing = await readManaged(p.plist);
   if (existing.exists && !existing.managed) throw new Error(`Refusing to overwrite unmanaged LaunchAgent: ${p.plist}`);
-  const npx = await executable(["/opt/homebrew/bin/npx", "/usr/local/bin/npx", "/usr/bin/npx"]);
-  if (!npx) throw new Error("npx was not found in a standard executable path");
+  const npx = await requireRuntimeNpx();
   const tailscale = await executable(["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
   await mkdir(p.startupDir, { recursive: true, mode: 0o700 });
   await mkdir(path.dirname(p.plist), { recursive: true, mode: 0o700 });
@@ -181,7 +195,7 @@ async function enable(): Promise<StartupStatus> {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await atomicWrite(p.script, wrapperScript(npx, tailscale), 0o700);
-  await atomicWrite(p.plist, launchAgentPlist(p), 0o600);
+  await atomicWrite(p.plist, launchAgentPlist(p, path.dirname(process.execPath)), 0o600);
   await run("/usr/bin/plutil", ["-lint", p.plist]);
   await run("/bin/launchctl", ["enable", `gui/${uid()}/${LABEL}`]);
   if (!(await launchctlState()).loaded) await run("/bin/launchctl", ["bootstrap", `gui/${uid()}`, p.plist]);
@@ -221,8 +235,7 @@ async function scheduleHandoff(delaySeconds: number) {
   if (current.keychain.credentialPresent && current.keychain.accessible !== true) {
     throw new Error(`Refusing handoff because the LaunchAgent cannot read the existing Claude credential (${current.keychain.detail ?? "unknown error"}).`);
   }
-  const npx = await executable(["/opt/homebrew/bin/npx", "/usr/local/bin/npx", "/usr/bin/npx"]);
-  if (!npx) throw new Error("npx was not found in a standard executable path");
+  const npx = await requireRuntimeNpx();
   const script = `#!/bin/zsh\ntrap '/bin/rm -f "$0"' EXIT\n/bin/sleep ${delaySeconds}\n${shellQuote(npx)} --yes bb-app@latest stop\n`;
   await atomicWrite(p.handoffScript, script, 0o700);
   const child = spawn(p.handoffScript, [], { detached: true, stdio: "ignore" });
