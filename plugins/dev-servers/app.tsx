@@ -170,7 +170,7 @@ function ServerChoice({
       type="button"
       className={`flex w-full items-center gap-3 border-b border-border px-4 text-left transition-colors last:border-b-0 disabled:cursor-not-allowed disabled:opacity-50 ${
         currentThread
-          ? "bg-state-active py-4 hover:bg-state-active"
+          ? "bg-background py-4 hover:bg-state-hover"
           : "py-3 hover:bg-state-hover"
       }`}
       disabled={!url}
@@ -183,7 +183,7 @@ function ServerChoice({
             {server.branchName ?? server.environmentName}
           </span>
           {currentThread ? (
-            <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
+            <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               Current thread
             </span>
           ) : null}
@@ -334,7 +334,7 @@ function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
           <section aria-labelledby="current-thread-dev-servers">
             <div
               id="current-thread-dev-servers"
-              className="sticky top-0 z-10 border-b border-border bg-muted/90 px-4 py-2 text-xs font-medium text-foreground backdrop-blur"
+              className="sticky top-0 z-10 border-b border-border bg-background px-4 py-2 text-xs font-medium text-foreground"
             >
               Current thread
             </div>
@@ -359,7 +359,7 @@ function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
           <section aria-labelledby="other-dev-servers">
             <div
               id="other-dev-servers"
-              className="sticky top-0 z-10 border-b border-border bg-muted/90 px-4 py-2 text-xs font-medium text-muted-foreground backdrop-blur"
+              className="sticky top-0 z-10 border-b border-border bg-background px-4 py-2 text-xs font-medium text-muted-foreground"
             >
               Other dev servers
             </div>
