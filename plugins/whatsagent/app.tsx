@@ -1139,7 +1139,7 @@ function Composer({
         onSubmit={submit}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length > 0) { e.preventDefault(); void attach(Array.from(e.dataTransfer.files)); } }}
-        className={cn("flex items-center gap-1.5 rounded-xl border border-input bg-transparent p-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
+        className={cn("flex items-center gap-1 rounded-xl border border-input bg-transparent p-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
       >
         <input
           ref={fileInputRef}
@@ -1174,7 +1174,7 @@ function Composer({
           aria-label="New post"
           aria-autocomplete="list"
           aria-expanded={showMenu}
-          className="h-7 min-w-0 flex-1 bg-transparent px-1 text-sm leading-7 outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
+          className="h-7 min-w-0 flex-1 bg-transparent pr-1 text-sm leading-7 outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
         />
         {over ? (
           <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={attachAsNote} disabled={uploading} aria-label="Move this text into a note file and link it">
