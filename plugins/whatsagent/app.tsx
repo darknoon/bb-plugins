@@ -912,6 +912,7 @@ function PostList({
                       <span className="text-[13px] font-semibold max-md:text-[15px]">{group.who}</span>
                     )}
                     {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
+                    {member?.archivedAt ? <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">archived</span> : null}
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
@@ -1019,7 +1020,7 @@ function Composer({
       return members
         .filter((m) => m.handle.includes(trigger.query))
         .slice(0, 8)
-        .map((m) => ({ insert: `@${m.handle} `, title: `@${m.handle}`, subtitle: m.kind === "human" ? "human" : m.threadTitle ?? m.id }));
+        .map((m) => ({ insert: `@${m.handle} `, title: `@${m.handle}`, subtitle: m.kind === "human" ? "human" : m.archivedAt ? "archived, won't be woken" : m.threadTitle ?? m.id }));
     }
     return channels
       .filter((c) => !c.archivedAt && c.name.includes(trigger.query))
@@ -1312,7 +1313,8 @@ function BoardPage({ subPath }: { subPath: string }) {
               }}
               onSend={async (body) => {
                 try {
-                  await rpc.call("wa_post_human", { channelId: active.id, body, identity });
+                  const { warnings } = await rpc.call("wa_post_human", { channelId: active.id, body, identity });
+                  for (const warning of warnings) toast.warning(warning);
                   refetchPosts();
                 } catch (cause) {
                   report(cause);

@@ -51,6 +51,8 @@ export const memberSchema = z.object({
   threadTitle: z.string().nullable(),
   homeChannelId: z.string().nullable(),
   createdAt: z.number(),
+  /** Set when the agent's thread is archived or deleted: mentions cannot wake it. */
+  archivedAt: z.number().nullable(),
 });
 export type Member = z.infer<typeof memberSchema>;
 
@@ -125,7 +127,7 @@ export const rpcContract = defineRpcContract({
   },
   wa_post_human: {
     input: z.object({ channelId: z.string(), body: z.string(), identity: humanIdentitySchema }),
-    output: postSchema,
+    output: z.object({ post: postSchema, warnings: z.array(z.string()) }),
   },
   wa_create_channel: {
     input: z.object({ name: z.string(), topic: z.string().optional(), projectId: z.string().nullable().optional(), identity: humanIdentitySchema }),
@@ -362,6 +364,7 @@ export default async function plugin(bb: BbPluginApi) {
     `ALTER TABLE members ADD COLUMN avatar_id TEXT`,
     `ALTER TABLE members ADD COLUMN avatar_url TEXT`,
     `ALTER TABLE members ADD COLUMN login TEXT`,
+    `ALTER TABLE members ADD COLUMN archived_at INTEGER`,
   ]);
 
   type ChannelRow = {
@@ -371,11 +374,11 @@ export default async function plugin(bb: BbPluginApi) {
   };
   type MemberRow = {
     id: string; handle: string; kind: "agent" | "human"; provider_id: string | null; model: string | null;
-    thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null; avatar_url: string | null;
+    thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null; avatar_url: string | null; archived_at: number | null;
   };
   const MEMBER_SELECT = `
     SELECT m.id, m.handle, m.kind, COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
-           m.thread_title, m.home_channel_id, m.created_at, m.avatar_id, m.avatar_url
+           m.thread_title, m.home_channel_id, m.created_at, m.avatar_id, m.avatar_url, m.archived_at
     FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`;
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
@@ -399,7 +402,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const toMember = (row: MemberRow): Member => ({
     id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model, avatarId: row.avatar_id, avatarUrl: row.avatar_url,
-    threadTitle: row.thread_title, homeChannelId: row.home_channel_id, createdAt: row.created_at,
+    threadTitle: row.thread_title, homeChannelId: row.home_channel_id, createdAt: row.created_at, archivedAt: row.archived_at,
   });
   const toPost = (row: PostRow): Post => ({
     id: row.id, channelId: row.channel_id, memberId: row.member_id, handle: row.handle,
@@ -503,11 +506,28 @@ export default async function plugin(bb: BbPluginApi) {
   // One-shot: a channel per most-active project, named after bb's id prefix
   // (#proj-<slug>). Runs once per install; later projects get channels from
   // agents or the human. Needs bb.sdk, so it lives in a service, not the factory.
+  function setArchived(threadId: string, archived: boolean) {
+    const result = db.prepare(`UPDATE members SET archived_at = ? WHERE id = ? AND kind = 'agent'`).run(archived ? Date.now() : null, threadId);
+    if (result.changes > 0) changed("member");
+  }
+  bb.events.on("thread.archived", ({ thread }) => setArchived(thread.id, true));
+  bb.events.on("thread.deleted", ({ thread }) => setArchived(thread.id, true));
+  // No unarchive event exists; any activity from the thread (a tool call, a turn) clears the flag.
+  bb.events.on("thread.active", ({ thread }) => setArchived(thread.id, false));
+
   bb.background.service("seed-project-channels", {
     async start(signal) {
       for (const member of listMembers()) {
         if (signal.aborted) return;
         if (member.kind === "agent" && !member.model) await backfillRuntime(member.id, member.providerId);
+      }
+      // Backfill archived state for members whose threads were archived before this existed.
+      try {
+        const archived = await bb.sdk.threads.list({ archived: true, includeHidden: true, limit: 500, signal });
+        const rows = Array.isArray(archived) ? archived : (archived as { threads?: Array<{ id: string }> }).threads ?? [];
+        for (const t of rows) if (getMember(t.id)) setArchived(t.id, true);
+      } catch (cause) {
+        if (!signal.aborted) bb.log.warn(`archived backfill failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
       if (await bb.storage.kv.get<boolean>("seeded-project-channels")) return;
       try {
@@ -711,6 +731,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function notifyMentions(post: Post, channel: Channel, handles: string[]): Promise<Set<string>> {
     const notified = new Set<string>();
+    // Archived threads refuse sends (HTTP 409); skip them instead of logging a failure per mention.
+    handles = handles.filter((h) => !getMemberByHandle(h)?.archivedAt);
     const broadcast = handles.some((h) => h === "everyone" || h === "channel" || h === "here");
     const targets: Member[] = [];
     for (const handle of handles) {
@@ -755,6 +777,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  /** Handles mentioned in `body` whose agent cannot be woken (archived thread). */
+  function unreachableMentions(body: string): string[] {
+    return extractMentions(body).filter((h) => getMemberByHandle(h)?.archivedAt);
+  }
   async function createPost(actor: Actor, channel: Channel, rawBody: string, asRole: string | null): Promise<Post> {
     const { maxPostChars } = await readPolicy();
     assertMayPost(actor, channel);
@@ -1002,7 +1028,11 @@ export default async function plugin(bb: BbPluginApi) {
       if (!channel) throw new BoardError(`No channel ${channelId}.`);
       return { posts: listPosts(channel.id, { limit: limit ?? 200 }) };
     },
-    wa_post_human: ({ channelId, body, identity }) => createPost(humanFor(identity), resolveChannel(channelId), body, null),
+    wa_post_human: async ({ channelId, body, identity }) => {
+      const post = await createPost(humanFor(identity), resolveChannel(channelId), body, null);
+      const warnings = unreachableMentions(body).map((h) => `@${h}'s thread is archived, so it was not woken.`);
+      return { post, warnings };
+    },
     wa_create_channel: ({ name, topic, projectId, identity }) => {
       const actor = humanFor(identity);
       return createChannel(actor, actor.memberId, name, topic ?? "", projectId ?? null);
@@ -1137,7 +1167,9 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const target = resolveChannel(channel);
         const post = await createPost(agentActor(ctx), target, body, as ?? null);
-        return `Posted to #${target.name} as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).`;
+        const unreachable = unreachableMentions(body);
+        const note = unreachable.length ? ` Note: ${unreachable.map((h) => `@${h}`).join(", ")} ${unreachable.length === 1 ? "is" : "are"} archived and not woken.` : "";
+        return `Posted to #${target.name} as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).${note}`;
       } catch (cause) {
         return toolError(cause);
       }
@@ -1490,7 +1522,7 @@ export default async function plugin(bb: BbPluginApi) {
           }
           case "members": {
             const members = listMembers();
-            return reply(members, members.map((m) => `@${m.handle}  ${m.kind === "human" ? "(human)" : `${m.id} [${m.providerId ?? "?"}${m.model ? ` ${m.model}` : ""}]${m.threadTitle ? ` — ${m.threadTitle}` : ""}`}`).join("\n"));
+            return reply(members, members.map((m) => `@${m.handle}  ${m.kind === "human" ? "(human)" : `${m.id} [${m.providerId ?? "?"}${m.model ? ` ${m.model}` : ""}]${m.archivedAt ? " (archived)" : ""}${m.threadTitle ? ` — ${m.threadTitle}` : ""}`}`).join("\n"));
           }
           case "archive":
           case "unarchive":
