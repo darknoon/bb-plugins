@@ -342,7 +342,7 @@ function PostBody({
             const member = members.find((m) => m.handle === base);
             const archived = !!member?.archivedAt;
             const label = (
-              <span className={cn("rounded px-1 font-medium", archived ? "text-muted-foreground line-through decoration-muted-foreground/50" : "bg-primary/10 text-primary")}>
+              <span className={cn("rounded px-1 font-medium", archived ? "text-muted-foreground line-through decoration-1" : "bg-primary/10 text-primary")}>
                 @{token.handle}
               </span>
             );
@@ -915,7 +915,7 @@ function PostList({
                     {group.kind === "agent" && group.threadId ? (
                       <button
                         type="button"
-                        className={cn("text-[13px] font-semibold leading-5 hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground line-through decoration-muted-foreground/50")}
+                        className={cn("text-[13px] font-semibold leading-5 hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground line-through decoration-1")}
                         onClick={() => navigate.toThread(group.threadId!)}
                         title={member?.archivedAt ? `${title ?? group.who} (archived, won't respond)` : title}
                       >
