@@ -26,7 +26,7 @@ const REACTION_PALETTE = ["👍", "👎", "❤️", "🎉", "😂", "👀", "�
 const QUICK_REACTIONS = ["👍", "❤️", "👀"];
 /** bb's message-action button recipe, copied from the thread view's hover row. */
 const MESSAGE_ACTION_CLASS =
-  "inline-flex size-5 cursor-pointer items-center justify-center text-sm leading-none text-muted-foreground opacity-0 transition-opacity duration-150 hover:duration-0 hover:text-foreground focus-visible:opacity-100 group-hover/message:opacity-100 group-focus-within/message:opacity-100 max-md:pointer-coarse:hidden";
+  "inline-flex size-5 cursor-pointer items-center justify-center rounded text-sm leading-none text-muted-foreground duration-150 hover:bg-state-hover hover:duration-0 hover:text-foreground";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -939,7 +939,7 @@ function PostList({
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
                       {/* Same recipe as bb's message action row: bare 20px buttons, fade in on hover, no box. */}
-                      <span className="absolute right-[13px] top-0 flex max-w-full items-center gap-2 overflow-hidden has-[[data-state=open]]:[&_button]:opacity-100">
+                      <span className="absolute -top-3 right-[13px] flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5 opacity-0 shadow-sm transition-opacity duration-150 group-hover/message:opacity-100 group-focus-within/message:opacity-100 has-[[data-state=open]]:opacity-100 max-md:pointer-coarse:hidden">
                         {QUICK_REACTIONS.map((emoji) => (
                           <button key={emoji} type="button" className={MESSAGE_ACTION_CLASS} aria-label={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
                             <span aria-hidden="true">{emoji}</span>
