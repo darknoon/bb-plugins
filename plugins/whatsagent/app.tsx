@@ -201,7 +201,7 @@ function ModelChip({ providerId, model, providers, title }: { providerId: string
   );
 }
 const attachmentUrl = (id: string) => `/api/v1/plugins/whatsagent/http/attachment?id=${id}`;
-const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]);
 
 function PostBody({
   post,
@@ -316,19 +316,42 @@ function clockTime(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-function Avatar({ handle, kind, onClick, title }: { handle: string; kind: "agent" | "human"; onClick?: () => void; title?: string }) {
+/** Deterministic hue per handle so the default mark is stable and distinct; mid lightness reads on both themes. */
+function handleHue(handle: string): number {
+  let hash = 0;
+  for (const ch of handle) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return hash % 360;
+}
+
+function Avatar({
+  handle,
+  kind,
+  avatarId,
+  onClick,
+  title,
+  size = "size-8",
+}: {
+  handle: string;
+  kind: "agent" | "human";
+  avatarId?: string | null;
+  onClick?: () => void;
+  title?: string;
+  size?: string;
+}) {
   const initials = handle.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
   const className = cn(
-    "flex size-8 shrink-0 select-none items-center justify-center rounded-full text-[11px] font-semibold",
-    kind === "human" ? "bg-primary/15 text-primary" : "bg-muted text-foreground",
+    "flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full text-[11px] font-semibold text-white",
+    size,
     onClick && "hover:ring-2 hover:ring-ring/40",
   );
+  const style = avatarId ? undefined : { backgroundColor: `hsl(${handleHue(handle)} ${kind === "human" ? "70%" : "45%"} 42%)` };
+  const content = avatarId ? <img src={attachmentUrl(avatarId)} alt="" className="size-full object-cover" /> : initials;
   return onClick ? (
-    <button type="button" className={className} onClick={onClick} title={title} aria-label={`Open ${handle}'s thread`}>
-      {initials}
+    <button type="button" className={className} style={style} onClick={onClick} title={title} aria-label={kind === "agent" ? `Open ${handle}'s thread` : `${handle}: change avatar`}>
+      {content}
     </button>
   ) : (
-    <div className={className} title={title}>{initials}</div>
+    <div className={className} style={style} title={title}>{content}</div>
   );
 }
 
@@ -535,7 +558,8 @@ function PresenceChip({ presence, providers }: { presence: Presence[]; providers
         {presence.map((p) => {
           const row = (
             <>
-              <span className={cn("size-2 shrink-0 rounded-full", p.watchingUntil ? "bg-success" : "bg-muted-foreground/50")} />
+              <Avatar handle={p.handle} kind={p.kind} avatarId={p.avatarId} size="size-5" />
+              <span className={cn("size-1.5 shrink-0 rounded-full", p.watchingUntil ? "bg-success" : "bg-muted-foreground/50")} aria-hidden="true" />
               <span className="font-medium">@{p.handle}</span>
               {p.kind === "human" ? <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">human</span> : <span className="min-w-0 flex-1"><ModelChip providerId={p.providerId} model={p.model} providers={providers} title={p.threadTitle ?? undefined} /></span>}
               <span className="shrink-0 text-[11px] text-muted-foreground">{describePresence(p)}</span>
@@ -694,6 +718,7 @@ function PostList({
   onChannel,
   onDelete,
   onReact,
+  onPickHumanAvatar,
 }: {
   posts: Post[];
   members: Member[];
@@ -703,6 +728,7 @@ function PostList({
   onChannel: (channel: Channel) => void;
   onDelete: (post: Post) => void;
   onReact: (post: Post, emoji: string) => void;
+  onPickHumanAvatar: () => void;
 }) {
   const navigate = useBbNavigate();
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -732,7 +758,13 @@ function PostList({
             const title = member?.threadTitle ?? group.threadId ?? undefined;
             return (
               <div key={group.key} className="mb-3 flex gap-3">
-                <Avatar handle={group.handle} kind={group.kind} title={title} onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : undefined} />
+                <Avatar
+                  handle={group.handle}
+                  kind={group.kind}
+                  avatarId={member?.avatarId ?? null}
+                  title={group.kind === "human" ? "Change your avatar" : title}
+                  onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : group.kind === "human" ? onPickHumanAvatar : undefined}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 leading-tight">
                     {group.kind === "agent" && group.threadId ? (
@@ -978,6 +1010,20 @@ function BoardPage({ subPath }: { subPath: string }) {
   const { posts, refetch: refetchPosts } = usePosts(rpc, active?.id ?? null);
   const presence = usePresence(rpc, active?.id ?? null);
   const providerRoster = useProviders();
+  const avatarInput = useRef<HTMLInputElement | null>(null);
+  const uploadFile = useCallback(
+    async (file: File) => {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Could not read image"));
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.readAsDataURL(file);
+      });
+      const mime = file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml";
+      return rpc.call("wa_upload", { mime, base64 });
+    },
+    [rpc],
+  );
   const providers = useMemo<ProviderLookup>(
     () => new Map(providerRoster.providers.map((p) => [p.id, { displayName: p.displayName, logoUrl: p.logoUrl ?? null }])),
     [providerRoster.providers],
@@ -990,6 +1036,25 @@ function BoardPage({ subPath }: { subPath: string }) {
 
   return (
     <div className="flex h-full min-h-0">
+      <input
+        ref={avatarInput}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+        className="hidden"
+        aria-hidden="true"
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          try {
+            const { id } = await uploadFile(file);
+            await rpc.call("wa_set_member_avatar", { memberId: "human", attachmentId: id });
+            refetch();
+          } catch (cause) {
+            report(cause);
+          }
+        }}
+      />
       <ChannelList
         channels={channels}
         activeId={active?.id ?? null}
@@ -1016,6 +1081,7 @@ function BoardPage({ subPath }: { subPath: string }) {
               providers={providers}
               humanHandle={overview.humanHandle}
               onChannel={select}
+              onPickHumanAvatar={() => avatarInput.current?.click()}
               onReact={async (post, emoji) => {
                 try {
                   await rpc.call("wa_react", { postId: post.id, emoji });
@@ -1038,17 +1104,7 @@ function BoardPage({ subPath }: { subPath: string }) {
               members={overview.members}
               channels={channels}
               maxPostChars={overview.maxPostChars}
-              onUpload={async (file) => {
-                const base64 = await new Promise<string>((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onerror = () => reject(new Error("Could not read image"));
-                  reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
-                  reader.readAsDataURL(file);
-                });
-                const mime = file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp";
-                const result = await rpc.call("wa_upload", { mime, base64 });
-                return result.ref;
-              }}
+              onUpload={async (file) => (await uploadFile(file)).ref}
               onSend={async (body) => {
                 try {
                   await rpc.call("wa_post_human", { channelId: active.id, body });

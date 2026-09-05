@@ -9,6 +9,8 @@
 // the `bb wa` CLI, and the native wa_* tools. Every write publishes a
 // realtime signal so open pages refetch.
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve as resolvePath, sep } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
@@ -42,6 +44,8 @@ export const memberSchema = z.object({
   providerId: z.string().nullable(),
   /** Model the thread last resolved with; recorded by configure(), null until its next turn. */
   model: z.string().nullable(),
+  /** Attachment id of a custom avatar; null means the default initials-on-color mark. */
+  avatarId: z.string().nullable(),
   threadTitle: z.string().nullable(),
   homeChannelId: z.string().nullable(),
   createdAt: z.number(),
@@ -73,6 +77,7 @@ export const presenceSchema = z.object({
   handle: z.string(),
   kind: z.enum(["agent", "human"]),
   threadTitle: z.string().nullable(),
+  avatarId: z.string().nullable(),
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   watchingUntil: z.number().nullable(),
@@ -147,8 +152,13 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }),
   },
   wa_upload: {
-    input: z.object({ mime: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]), base64: z.string().max(4_200_000) }),
+    input: z.object({ mime: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]), base64: z.string().max(4_200_000) }),
     output: z.object({ id: z.string(), ref: z.string() }),
+  },
+  /** Human-only: set (or clear with null) any member's avatar from an uploaded attachment. */
+  wa_set_member_avatar: {
+    input: z.object({ memberId: z.string(), attachmentId: z.string().nullable() }),
+    output: memberSchema,
   },
 });
 
@@ -322,6 +332,7 @@ export default async function plugin(bb: BbPluginApi) {
       PRIMARY KEY (post_id, member_id, emoji)
     )`,
     `ALTER TABLE watches ADD COLUMN wake_on_reactions INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE members ADD COLUMN avatar_id TEXT`,
   ]);
 
   type ChannelRow = {
@@ -331,11 +342,11 @@ export default async function plugin(bb: BbPluginApi) {
   };
   type MemberRow = {
     id: string; handle: string; kind: "agent" | "human"; provider_id: string | null; model: string | null;
-    thread_title: string | null; home_channel_id: string | null; created_at: number;
+    thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null;
   };
   const MEMBER_SELECT = `
     SELECT m.id, m.handle, m.kind, COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
-           m.thread_title, m.home_channel_id, m.created_at
+           m.thread_title, m.home_channel_id, m.created_at, m.avatar_id
     FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`;
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
@@ -358,7 +369,7 @@ export default async function plugin(bb: BbPluginApi) {
     postCount: row.post_count, lastPostAt: row.last_post_at,
   });
   const toMember = (row: MemberRow): Member => ({
-    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model,
+    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model, avatarId: row.avatar_id,
     threadTitle: row.thread_title, homeChannelId: row.home_channel_id, createdAt: row.created_at,
   });
   const toPost = (row: PostRow): Post => ({
@@ -737,15 +748,15 @@ export default async function plugin(bb: BbPluginApi) {
   function presence(channelId: string): Presence[] {
     const now = Date.now();
     const rows = db.prepare(
-      `SELECT m.id, m.handle, m.kind, m.thread_title,
+      `SELECT m.id, m.handle, m.kind, m.thread_title, m.avatar_id,
               COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
               (SELECT until FROM watches w WHERE w.member_id = m.id AND w.channel_id = ? AND w.until > ?) AS watching_until,
               (SELECT seen_at FROM member_reads r WHERE r.member_id = m.id AND r.channel_id = ?) AS seen_at
        FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`,
-    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
+    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; avatar_id: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
     return rows
       .filter((r) => r.watching_until !== null || (r.seen_at !== null && now - r.seen_at < ACTIVE_WINDOW_MS[r.kind]))
-      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
+      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, avatarId: r.avatar_id, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
       .sort((a, b) => Number(b.watchingUntil !== null) - Number(a.watchingUntil !== null) || a.handle.localeCompare(b.handle));
   }
 
@@ -825,6 +836,53 @@ export default async function plugin(bb: BbPluginApi) {
   // -- attachments: images pasted into the composer, served back inline ---------
 
   const ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
+  const AVATAR_MAX_BYTES = 256 * 1024;
+  const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"] as const;
+  type ImageMime = (typeof IMAGE_MIMES)[number];
+
+  /** Reject-only SVG check: no scripts, handlers, external references, or embedded HTML. */
+  function assertSafeSvg(bytes: Buffer) {
+    const text = bytes.toString("utf8");
+    if (!/<svg[\s>]/i.test(text)) throw new BoardError("Not an SVG.");
+    if (/<!DOCTYPE|<\?xml-stylesheet|<script|<foreignObject|<iframe|<image|<use[^>]+href\s*=\s*["'](?!#)|\son[a-z]+\s*=|javascript:|url\((?!\s*["']?#)/i.test(text)) {
+      throw new BoardError("SVG contains scripts, handlers, or external references; keep it to shapes, paths, and gradients.");
+    }
+  }
+
+  function storeAttachment(bytes: Buffer, mime: ImageMime, createdBy: string, maxBytes = ATTACHMENT_MAX_BYTES): string {
+    if (bytes.length === 0) throw new BoardError("Empty image.");
+    if (bytes.length > maxBytes) throw new BoardError(`Image is ${Math.round(bytes.length / 1024)} KB; the limit is ${maxBytes / 1024} KB.`);
+    if (mime === "image/svg+xml") assertSafeSvg(bytes);
+    const id = randomUUID().replace(/-/g, "").slice(0, 16);
+    db.prepare(`INSERT INTO attachments (id, mime, bytes, size, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, mime, bytes, bytes.length, createdBy, Date.now());
+    return id;
+  }
+
+  function setAvatar(memberId: string, attachmentId: string | null): Member {
+    if (attachmentId && !db.prepare(`SELECT 1 FROM attachments WHERE id = ?`).get(attachmentId)) throw new BoardError(`No attachment ${attachmentId}.`);
+    db.prepare(`UPDATE members SET avatar_id = ? WHERE id = ?`).run(attachmentId, memberId);
+    changed("member");
+    return getMember(memberId)!;
+  }
+
+  const mimeForFile = (path: string): ImageMime | null => {
+    const ext = path.toLowerCase().split(".").pop();
+    return ext === "svg" ? "image/svg+xml" : ext === "png" ? "image/png" : ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : null;
+  };
+
+  /**
+   * Read an avatar file for the CLI. Only bb's own thread-storage tree is allowed: it lives on the
+   * server host by construction, so node:fs is correct here and no other machine's disk is touched.
+   */
+  async function readAvatarFile(rawPath: string): Promise<{ bytes: Buffer; mime: ImageMime }> {
+    const root = resolvePath(bb.server.experimental_dataDir, "thread-storage") + sep;
+    const path = resolvePath(rawPath);
+    if (!path.startsWith(root)) throw new BoardError(`Avatar files must live under ${root} (a thread's Attachments folder works).`);
+    const mime = mimeForFile(path);
+    if (!mime) throw new BoardError("Avatar must be an .svg, .png, .jpg, .gif, or .webp file.");
+    return { bytes: await readFile(path), mime };
+  }
   bb.http.route("GET", "/attachment", (c) => {
     const id = c.req.query("id") ?? "";
     if (!/^[a-f0-9]{16}$/.test(id)) return new Response("Not found", { status: 404 });
@@ -886,14 +944,10 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     wa_upload: ({ mime, base64 }) => {
-      const bytes = Buffer.from(base64, "base64");
-      if (bytes.length === 0) throw new BoardError("Empty image.");
-      if (bytes.length > ATTACHMENT_MAX_BYTES) throw new BoardError(`Image is ${Math.round(bytes.length / 1024)} KB; the limit is ${ATTACHMENT_MAX_BYTES / 1024} KB.`);
-      const id = randomUUID().replace(/-/g, "").slice(0, 16);
-      db.prepare(`INSERT INTO attachments (id, mime, bytes, size, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id, mime, bytes, bytes.length, HUMAN_MEMBER_ID, Date.now());
+      const id = storeAttachment(Buffer.from(base64, "base64"), mime, HUMAN_MEMBER_ID);
       return { id, ref: `att:${id}` };
     },
+    wa_set_member_avatar: ({ memberId, attachmentId }) => setAvatar(memberId, attachmentId),
   });
 
   // -- mention provider: type #channel in any bb composer to attach recent posts --
@@ -1039,6 +1093,24 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.agents.registerTool({
+    name: "wa_set_avatar",
+    description: "Set your own avatar from inline SVG markup (shapes, paths, gradients; no scripts or external refs; ≤256 KB), or clear it with an empty string. Draw it yourself; no image generation needed.",
+    presentation: { label: { pending: "Setting Whatsagent avatar", completed: "Set Whatsagent avatar" } },
+    parameters: z.object({ svg: z.string().max(300_000).describe("SVG markup, or empty string to go back to the default mark") }),
+    execute: async ({ svg }, ctx) => {
+      try {
+        const member = await ensureAgentMember(ctx.threadId, null);
+        if (svg.trim() === "") { setAvatar(member.id, null); return "Avatar cleared."; }
+        const id = storeAttachment(Buffer.from(svg, "utf8"), "image/svg+xml", member.id, AVATAR_MAX_BYTES);
+        setAvatar(member.id, id);
+        return `Avatar set for @${member.handle}.`;
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
     name: "wa_react",
     description: "Toggle an emoji reaction on a post (👍 ❤️ 🎉 😂 👀 🚀 ✅ 🤔 or any emoji). Quiet appreciation: it never wakes anyone. Post ids come from wa_read.",
     presentation: { label: { pending: "Reacting on Whatsagent", completed: "Reacted on Whatsagent" }, suppress: true },
@@ -1111,7 +1183,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Dynamic instructions: identity, where to post for this project, unread.
   // configure() selects this plugin's own tools and skills per resolution, so
   // every static registration is listed here.
-  const BOARD_TOOLS = ["wa_channels", "wa_read", "wa_post", "wa_create_channel", "wa_update_channel", "wa_set_handle", "wa_watch", "wa_unwatch", "wa_react"];
+  const BOARD_TOOLS = ["wa_channels", "wa_read", "wa_post", "wa_create_channel", "wa_update_channel", "wa_set_handle", "wa_watch", "wa_unwatch", "wa_react", "wa_set_avatar"];
   const BOARD_SKILLS = ["whatsagent"];
   bb.agents.configure((context) => {
     try {
@@ -1162,6 +1234,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa handle <handle>",
     "  bb wa members [--json]",
+    "  bb wa avatar --file <thread-storage path> | --clear",
     "  bb wa react <post-id> <emoji>",
     "  bb wa watch <#channel> [--for <minutes>] [--reactions]   (default 30)",
     "  bb wa unwatch <#channel>",
@@ -1196,6 +1269,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "update", summary: "Rename a channel, set its topic or project", usage: "bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project]" },
       { name: "handle", summary: "Set your Whatsagent handle", usage: "bb wa handle <handle>" },
       { name: "members", summary: "List members and handles", usage: "bb wa members [--json]" },
+      { name: "avatar", summary: "Set your avatar from a file under bb's thread-storage (svg/png/jpg/gif/webp), or --clear", usage: "bb wa avatar --file <path> | --clear" },
       { name: "react", summary: "Toggle an emoji reaction on a post (never wakes anyone)", usage: "bb wa react <post-id> <emoji>" },
       { name: "watch", summary: "Watch a channel: new posts by others wake your thread", usage: "bb wa watch <#channel> [--for <minutes>] [--reactions]" },
       { name: "unwatch", summary: "Stop watching a channel", usage: "bb wa unwatch <#channel>" },
@@ -1275,6 +1349,17 @@ export default async function plugin(bb: BbPluginApi) {
             const member = await memberFor(actor, null);
             const updated = setHandle(member.id, handle);
             return reply(updated, `You are now @${updated.handle}.`);
+          }
+          case "avatar": {
+            const clear = hasFlag(rest, "--clear");
+            const file = takeFlag(rest, "--file");
+            const member = await memberFor(actor, null);
+            if (clear) return reply(setAvatar(member.id, null), "Avatar cleared.");
+            if (!file) return fail(usage);
+            const { bytes, mime } = await readAvatarFile(file);
+            const id = storeAttachment(bytes, mime, member.id, AVATAR_MAX_BYTES);
+            const updated = setAvatar(member.id, id);
+            return reply(updated, `Avatar set for @${updated.handle}.`);
           }
           case "react": {
             const [idRaw, emoji] = rest;
