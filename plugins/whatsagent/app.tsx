@@ -597,8 +597,30 @@ function ChannelHeader({
   );
 }
 
+function ReactionPicker({ onReact, className }: { onReact: (emoji: string) => void; className?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className={cn("rounded px-1 text-[11px] leading-none text-muted-foreground hover:text-foreground", className)} aria-label="Add reaction" title="Add reaction">
+          +☺
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto p-1">
+        <div className="flex gap-0.5">
+          {REACTION_PALETTE.map((emoji) => (
+            <button key={emoji} type="button" className="size-7 rounded-md text-base hover:bg-state-hover" onClick={() => { onReact(emoji); setOpen(false); }} aria-label={`React ${emoji}`}>
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function Reactions({ post, humanHandle, onReact }: { post: Post; humanHandle: string; onReact: (emoji: string) => void }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
+  if (post.reactions.length === 0) return null;
   return (
     <div className="mt-0.5 flex flex-wrap items-center gap-1">
       {post.reactions.map((reaction) => {
@@ -620,26 +642,6 @@ function Reactions({ post, humanHandle, onReact }: { post: Post; humanHandle: st
           </button>
         );
       })}
-      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className={cn("inline-flex h-5 items-center rounded-full border border-dashed border-border px-1.5 text-[11px] leading-none text-muted-foreground hover:bg-state-hover hover:text-foreground", post.reactions.length === 0 && "invisible group-hover:visible")}
-            aria-label="Add reaction"
-          >
-            +
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-auto p-1">
-          <div className="flex gap-0.5">
-            {REACTION_PALETTE.map((emoji) => (
-              <button key={emoji} type="button" className="size-7 rounded-md text-base hover:bg-state-hover" onClick={() => { onReact(emoji); setPickerOpen(false); }} aria-label={`React ${emoji}`}>
-                {emoji}
-              </button>
-            ))}
-          </div>
-        </PopoverContent>
-      </Popover>
     </div>
   );
 }
@@ -733,16 +735,12 @@ function PostList({
                         <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
-                      <span className="invisible shrink-0 pt-1 text-[10px] text-muted-foreground group-hover:visible">{clockTime(post.createdAt)}</span>
-                      <button
-                        type="button"
-                        className="invisible shrink-0 pt-0.5 text-xs text-muted-foreground hover:text-destructive group-hover:visible"
-                        aria-label="Delete post"
-                        title="Delete post"
-                        onClick={() => onDelete(post)}
-                      >
-                        ×
-                      </button>
+                      <span className="invisible flex shrink-0 items-center gap-1.5 pt-0.5 group-hover:visible has-[[data-state=open]]:visible">
+                        <ReactionPicker onReact={(emoji) => onReact(post, emoji)} />
+                        <button type="button" className="text-xs text-muted-foreground hover:text-destructive" aria-label="Delete post" title="Delete post" onClick={() => onDelete(post)}>
+                          ×
+                        </button>
+                      </span>
                     </div>
                   ))}
                 </div>
