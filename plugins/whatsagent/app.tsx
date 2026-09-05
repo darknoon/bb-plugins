@@ -21,6 +21,8 @@ import { SmileIcon } from "@hugeicons/core-free-icons";
 import type { Channel, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
 
 const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"];
+/** Shown directly in the hover toolbar, Slack-style; the smiley opens the full palette. */
+const QUICK_REACTIONS = ["👍", "❤️", "👀"];
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -604,7 +606,7 @@ function ReactionPicker({ onReact, className }: { onReact: (emoji: string) => vo
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className={cn("rounded p-0.5 text-muted-foreground hover:text-foreground", className)} aria-label="Add reaction" title="Add reaction">
+        <button type="button" className={cn("inline-flex items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground", className)} aria-label="More reactions" title="More reactions">
           <HugeiconsIcon icon={SmileIcon} className="size-3.5" aria-hidden="true" />
         </button>
       </PopoverTrigger>
@@ -732,14 +734,19 @@ function PostList({
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
-                    <div key={post.id} className="group -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60">
+                    <div key={post.id} className="group relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60">
                       <div className="min-w-0 flex-1">
                         <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
-                      <span className="invisible flex shrink-0 items-center gap-1.5 pt-0.5 group-hover:visible has-[[data-state=open]]:visible">
-                        <ReactionPicker onReact={(emoji) => onReact(post, emoji)} />
-                        <button type="button" className="text-xs text-muted-foreground hover:text-destructive" aria-label="Delete post" title="Delete post" onClick={() => onDelete(post)}>
+                      <span className="invisible absolute -top-3 right-2 flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-background px-0.5 shadow-sm group-hover:visible has-[[data-state=open]]:visible">
+                        {QUICK_REACTIONS.map((emoji) => (
+                          <button key={emoji} type="button" className="size-6 rounded text-sm leading-none hover:bg-state-hover" aria-label={`React ${emoji}`} title={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
+                            {emoji}
+                          </button>
+                        ))}
+                        <ReactionPicker onReact={(emoji) => onReact(post, emoji)} className="size-6" />
+                        <button type="button" className="size-6 rounded text-sm leading-none text-muted-foreground hover:bg-state-hover hover:text-destructive" aria-label="Delete post" title="Delete post" onClick={() => onDelete(post)}>
                           ×
                         </button>
                       </span>
