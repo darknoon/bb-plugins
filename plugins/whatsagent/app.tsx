@@ -24,6 +24,9 @@ import type { Channel, HumanIdentity, Member, Post, PostingPolicy, Presence, rpc
 const REACTION_PALETTE = ["👍", "👎", "❤️", "🎉", "😂", "👀", "🚀", "✅", "❌", "🤔", "🔥", "🙏", "😬", "💯", "🫡", "🐛"];
 /** Shown directly in the hover toolbar, Slack-style; the smiley opens the full palette. */
 const QUICK_REACTIONS = ["👍", "❤️", "👀"];
+/** bb's message-action button recipe, copied from the thread view's hover row. */
+const MESSAGE_ACTION_CLASS =
+  "inline-flex size-5 cursor-pointer items-center justify-center text-sm leading-none text-muted-foreground opacity-0 transition-opacity duration-150 hover:duration-0 hover:text-foreground focus-visible:opacity-100 group-hover/message:opacity-100 group-focus-within/message:opacity-100 max-md:pointer-coarse:hidden";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -908,32 +911,37 @@ function PostList({
                   onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : group.memberId === myId ? onPickHumanAvatar : undefined}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2 leading-tight">
+                  <div className="flex h-5 items-center gap-1.5">
                     {group.kind === "agent" && group.threadId ? (
-                      <button type="button" className={cn("text-[13px] font-semibold hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground")} onClick={() => navigate.toThread(group.threadId!)} title={title}>
+                      <button
+                        type="button"
+                        className={cn("text-[13px] font-semibold leading-5 hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground line-through decoration-muted-foreground/50")}
+                        onClick={() => navigate.toThread(group.threadId!)}
+                        title={member?.archivedAt ? `${title ?? group.who} (archived, won't respond)` : title}
+                      >
                         {group.who}
                       </button>
                     ) : (
-                      <span className="text-[13px] font-semibold max-md:text-[15px]">{group.who}</span>
+                      <span className="text-[13px] font-semibold leading-5 max-md:text-[15px]">{group.who}</span>
                     )}
                     {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
-                    {member?.archivedAt ? <span className="text-[11px] text-muted-foreground">archived</span> : null}
-                    <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
+                    <span className="ml-auto shrink-0 text-[11px] leading-5 text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
-                    <div key={post.id} className="group relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60 max-md:text-[16px]">
+                    <div key={post.id} className="group/message relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 pr-[13px] text-sm leading-relaxed max-md:text-[16px]">
                       <div className="min-w-0 flex-1">
                         <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
-                      <span className="invisible absolute -top-3 right-2 flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-background px-0.5 shadow-sm group-hover:visible has-[[data-state=open]]:visible">
+                      {/* Same recipe as bb's message action row: bare 20px buttons, fade in on hover, no box. */}
+                      <span className="absolute right-[13px] top-0 flex max-w-full items-center gap-2 overflow-hidden has-[[data-state=open]]:[&_button]:opacity-100">
                         {QUICK_REACTIONS.map((emoji) => (
-                          <button key={emoji} type="button" className="size-6 rounded text-sm leading-none hover:bg-state-hover" aria-label={`React ${emoji}`} title={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
-                            {emoji}
+                          <button key={emoji} type="button" className={MESSAGE_ACTION_CLASS} aria-label={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
+                            <span aria-hidden="true">{emoji}</span>
                           </button>
                         ))}
-                        <ReactionPicker onReact={(emoji) => onReact(post, emoji)} className="size-6" />
-                        <button type="button" className="size-6 rounded text-sm leading-none text-muted-foreground hover:bg-state-hover hover:text-destructive" aria-label="Delete post" title="Delete post" onClick={() => onDelete(post)}>
+                        <ReactionPicker onReact={(emoji) => onReact(post, emoji)} className={MESSAGE_ACTION_CLASS} />
+                        <button type="button" className={cn(MESSAGE_ACTION_CLASS, "hover:text-destructive")} aria-label="Delete post" onClick={() => onDelete(post)}>
                           ×
                         </button>
                       </span>
