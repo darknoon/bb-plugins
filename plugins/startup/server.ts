@@ -2,6 +2,10 @@ import type { BbPluginApi, PluginCliContext, PluginCliResult } from "@get-bb/plu
 import { hostContract, rpcContract, type ActiveThread, type StartupStatus } from "./contract.js";
 
 const THREAD_PAGE_SIZE = 200;
+// Short pause before the detached handoff script stops bb. It only needs to outlive the
+// RPC/CLI response that reports the schedule; the UI then watches the realtime connection
+// drop and return to know when the restart finished.
+const HANDOFF_DELAY_SECONDS = 2;
 
 function usage(exitCode = 0): PluginCliResult {
   return {
@@ -110,9 +114,9 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = await primaryHost();
       const running = await activeThreads();
       if (running.length > 0 && !allowActive) {
-        return { hostId, scheduled: false, delaySeconds: 8, activeThreads: running };
+        return { hostId, scheduled: false, delaySeconds: HANDOFF_DELAY_SECONDS, activeThreads: running };
       }
-      const result = await host.call("handoff", { delaySeconds: 8 }, { hostId });
+      const result = await host.call("handoff", { delaySeconds: HANDOFF_DELAY_SECONDS }, { hostId });
       return { hostId, ...result, activeThreads: running };
     },
   });
@@ -134,7 +138,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (parsed.noHandoff && parsed.command !== "enable") throw new Error("--no-handoff is only valid with enable");
         const hostId = await selectedHost(parsed.hostId, ctx);
         if (parsed.command === "handoff") {
-          const result = await host.call("handoff", { delaySeconds: 8 }, { hostId, signal: ctx.signal });
+          const result = await host.call("handoff", { delaySeconds: HANDOFF_DELAY_SECONDS }, { hostId, signal: ctx.signal });
           return { exitCode: 0, stdout: `Managed handoff scheduled on ${hostId} in ${result.delaySeconds} seconds.\n` };
         }
         if (parsed.command === "enable") {
@@ -142,7 +146,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (!status.supported) return { exitCode: 1, stderr: formatStatus(hostId, status) };
           let message = formatStatus(hostId, status);
           if (!parsed.noHandoff) {
-            const handoff = await host.call("handoff", { delaySeconds: 8 }, { hostId, signal: ctx.signal });
+            const handoff = await host.call("handoff", { delaySeconds: HANDOFF_DELAY_SECONDS }, { hostId, signal: ctx.signal });
             message += `Managed handoff scheduled in ${handoff.delaySeconds} seconds.\n`;
           }
           return { exitCode: 0, stdout: message };

@@ -44,7 +44,7 @@ export const hostContract = defineRpcContract({
   enable: { input: z.null(), output: startupStatusSchema },
   disable: { input: z.null(), output: startupStatusSchema },
   handoff: {
-    input: z.object({ delaySeconds: z.number().int().min(3).max(60) }).strict(),
+    input: z.object({ delaySeconds: z.number().int().min(1).max(60) }).strict(),
     output: z.object({ scheduled: z.boolean(), delaySeconds: z.number().int() }).strict(),
   },
 });

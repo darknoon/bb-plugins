@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   definePluginApp,
   useRealtimeConnectionState,
@@ -8,6 +8,17 @@ import type { ActiveThread, StartupStatus, rpcContract } from "./contract.js";
 
 type StatusResult = { hostId: string; status: StartupStatus };
 type Action = "enable" | "disable" | "handoff";
+// "stopping": handoff scheduled, waiting for the realtime connection to drop.
+// "reconnecting": connection dropped, waiting for the new bb to come back.
+type RestartPhase = "stopping" | "reconnecting";
+
+// The handoff script sleeps briefly, stops bb, and allows up to 30 seconds for the port to be
+// released; if the connection is still up after this, the handoff most likely failed.
+const RESTART_STOP_TIMEOUT_MS = 90_000;
+// `bb-app@latest start` may download an update before listening again.
+const RESTART_RECONNECT_TIMEOUT_MS = 5 * 60_000;
+const STATUS_RETRY_ATTEMPTS = 5;
+const STATUS_RETRY_DELAY_MS = 1_000;
 
 function statusLabel(status: StartupStatus): { label: string; detail: string } {
   if (!status.supported) return { label: "Unsupported", detail: "This host is not running macOS." };
@@ -33,6 +44,19 @@ function StateRow({ label, value, detail }: { label: string; value: string; deta
   );
 }
 
+function Spinner() {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+    />
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function StartupSettings() {
   const rpc = useRpc<typeof rpcContract>();
   const connection = useRealtimeConnectionState();
@@ -41,14 +65,20 @@ function StartupSettings() {
   const [busy, setBusy] = useState<Action | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [restartWarning, setRestartWarning] = useState<ActiveThread[] | null>(null);
+  const [restart, setRestart] = useState<RestartPhase | null>(null);
+  const restartRef = useRef<RestartPhase | null>(null);
+  restartRef.current = restart;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     try {
       const next = await rpc.call("status", null);
       setResult(next);
       setError(null);
+      return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      // Status calls are expected to fail while bb is restarting.
+      if (restartRef.current === null) setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
     }
   }, [rpc]);
 
@@ -67,8 +97,45 @@ function StartupSettings() {
   }, [load]);
 
   useEffect(() => {
-    if (connection === "connected") void load();
+    if (connection === "connected" && restartRef.current === null) void load();
   }, [connection, load]);
+
+  // Drive the restart phases from the realtime connection: scheduled -> dropped -> back.
+  useEffect(() => {
+    if (restart === "stopping" && connection !== "connected") {
+      setRestart("reconnecting");
+      return;
+    }
+    if (restart !== "reconnecting" || connection !== "connected") return;
+    let cancelled = false;
+    void (async () => {
+      let loaded = false;
+      for (let attempt = 0; attempt < STATUS_RETRY_ATTEMPTS && !cancelled; attempt += 1) {
+        loaded = await load();
+        if (loaded) break;
+        await sleep(STATUS_RETRY_DELAY_MS);
+      }
+      if (cancelled) return;
+      setRestart(null);
+      setNotice(loaded ? "BB restarted." : "BB reconnected, but its startup status could not be read yet.");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [restart, connection, load]);
+
+  // Never spin forever: give up if bb does not go down, or does not come back.
+  useEffect(() => {
+    if (restart === null) return;
+    const timeout = restart === "stopping" ? RESTART_STOP_TIMEOUT_MS : RESTART_RECONNECT_TIMEOUT_MS;
+    const timer = window.setTimeout(() => {
+      setRestart(null);
+      setError(restart === "stopping"
+        ? "BB did not stop for the restart. Check ~/.bb/logs/startup.handoff.log."
+        : "BB has not come back yet. It may still be starting; check ~/.bb/logs/startup.stderr.log.");
+    }, timeout);
+    return () => window.clearTimeout(timer);
+  }, [restart]);
 
   async function runAction(action: Action, allowActive = false) {
     setBusy(action);
@@ -82,7 +149,7 @@ function StartupSettings() {
           setRestartWarning(handoff.activeThreads);
         } else {
           setRestartWarning(null);
-          setNotice(`Restart scheduled in ${handoff.delaySeconds} seconds. BB will reconnect automatically.`);
+          setRestart("stopping");
         }
       } else {
         const next = await rpc.call(action, null);
@@ -97,6 +164,7 @@ function StartupSettings() {
 
   const summary = useMemo(() => result ? statusLabel(result.status) : null, [result]);
   const status = result?.status;
+  const locked = busy !== null || restart !== null;
 
   return (
     <div className="space-y-4">
@@ -112,7 +180,7 @@ function StartupSettings() {
               role="switch"
               aria-checked={status.enabled}
               aria-label="Start bb at login"
-              disabled={busy !== null}
+              disabled={locked}
               onClick={() => void runAction(status.enabled ? "disable" : "enable")}
               className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${status.enabled ? "bg-primary" : "bg-input"} disabled:cursor-not-allowed disabled:opacity-50`}
             >
@@ -124,7 +192,14 @@ function StartupSettings() {
       </div>
 
       {error ? <div role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">{error}</div> : null}
-      {notice ? <div role="status" className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">{notice}</div> : null}
+      {restart ? (
+        <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-lg border border-border bg-muted p-3 text-sm text-foreground">
+          <Spinner />
+          <span>{restart === "stopping" ? "Restarting BB…" : "Waiting for BB to come back…"}</span>
+        </div>
+      ) : notice ? (
+        <div role="status" className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">{notice}</div>
+      ) : null}
 
       {status && result ? (
         <div className="rounded-lg border border-border bg-card px-4">
@@ -166,7 +241,7 @@ function StartupSettings() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={busy !== null}
+              disabled={locked}
               onClick={() => void runAction("handoff", true)}
               className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -174,7 +249,7 @@ function StartupSettings() {
             </button>
             <button
               type="button"
-              disabled={busy !== null}
+              disabled={locked}
               onClick={() => setRestartWarning(null)}
               className="rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -187,15 +262,18 @@ function StartupSettings() {
       {status?.enabled && restartWarning === null ? (
         <button
           type="button"
-          disabled={busy !== null}
+          disabled={locked}
           onClick={() => void runAction("handoff")}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {busy === "handoff"
-            ? "Checking running threads…"
-            : status.runtimeManaged
-              ? "Restart and update BB"
-              : "Restart under launchd"}
+          {restart ? <Spinner /> : null}
+          {restart
+            ? "Restarting…"
+            : busy === "handoff"
+              ? "Checking running threads…"
+              : status.runtimeManaged
+                ? "Restart and update BB"
+                : "Restart under launchd"}
         </button>
       ) : null}
 

@@ -70,6 +70,9 @@ The LaunchAgent runs after the macOS user logs in, so the login keychain is
 available to bb's providers. It also reconciles `tailscale serve --bg 38886`
 when starting bb, if the Tailscale CLI is installed.
 
+A handoff pauses two seconds so the scheduling response can be delivered, then
+stops the running bb. The settings page shows a spinner until the realtime
+connection drops and returns, then reloads status.
 The first handoff stops the foreground launcher and waits for both port 38886
 and its runtime record to be released before loading the LaunchAgent. Managed
 restarts use launchd's `KeepAlive`; crash-loop retries are throttled to 30
