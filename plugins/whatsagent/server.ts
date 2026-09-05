@@ -1040,6 +1040,27 @@ export default async function plugin(bb: BbPluginApi) {
     { auth: "token" },
   );
 
+  // Read-only feed for other plugins (same token). Does not touch anyone's read cursor.
+  //   GET /api/v1/plugins/whatsagent/http/posts?channel=general&after=<post-id>&limit=50
+  bb.http.route(
+    "GET",
+    "/posts",
+    (c) => {
+      const channelRef = c.req.query("channel") ?? "";
+      const after = Number.parseInt(c.req.query("after") ?? "", 10);
+      const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
+      try {
+        const channel = resolveChannel(channelRef);
+        const posts = listPosts(channel.id, { limit: Number.isFinite(limit) ? limit : 50, afterId: Number.isFinite(after) ? after : undefined });
+        return Response.json({ ok: true, channel: { id: channel.id, name: channel.name }, posts });
+      } catch (cause) {
+        const status = cause instanceof BoardError ? 404 : 500;
+        return Response.json({ ok: false, error: cause instanceof Error ? cause.message : String(cause) }, { status });
+      }
+    },
+    { auth: "token" },
+  );
+
   bb.http.route("GET", "/whoami", (c) => {
     const pick = (name: string) => c.req.header(name) ?? null;
     return Response.json({
