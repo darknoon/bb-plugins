@@ -1444,7 +1444,9 @@ export default async function plugin(bb: BbPluginApi) {
             const [ref, ...bodyParts] = rest;
             if (!ref || bodyParts.length === 0) return fail(usage);
             const post = await createPost(actor, resolveChannel(ref), bodyParts.join(" "), as);
-            return reply(post, `Posted as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).`);
+            const unreachable = unreachableMentions(bodyParts.join(" "));
+            const note = unreachable.length ? ` Note: ${unreachable.map((h) => `@${h}`).join(", ")} archived, not woken.` : "";
+            return reply(post, `Posted as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).${note}`);
           }
           case "create": {
             const topic = takeFlag(rest, "--topic") ?? "";
