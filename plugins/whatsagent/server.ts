@@ -174,7 +174,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }),
   },
   wa_upload: {
-    input: z.object({ mime: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]), base64: z.string().max(4_200_000) }),
+    input: z.object({ mime: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/plain", "text/markdown"]), base64: z.string().max(4_200_000) }),
     output: z.object({ id: z.string(), ref: z.string() }),
   },
   /** Human-only: set (or clear with null) any member's avatar from an uploaded attachment. */
@@ -896,8 +896,15 @@ export default async function plugin(bb: BbPluginApi) {
 
   const ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
   const AVATAR_MAX_BYTES = 256 * 1024;
-  const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"] as const;
+  const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "text/plain", "text/markdown"] as const;
   type ImageMime = (typeof IMAGE_MIMES)[number];
+  const NOTE_MAX_BYTES = 64 * 1024;
+
+  /** Store over-limit text as a markdown note attachment and return the link to append to a post. */
+  function storeNote(text: string, createdBy: string): string {
+    const id = storeAttachment(Buffer.from(text.replace(/\r\n?/g, "\n").trim(), "utf8"), "text/markdown", createdBy, NOTE_MAX_BYTES);
+    return `[note](att:${id})`;
+  }
 
   /** Reject-only SVG check: no scripts, handlers, external references, or embedded HTML. */
   function assertSafeSvg(bytes: Buffer) {
@@ -947,9 +954,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (!/^[a-f0-9]{16}$/.test(id)) return new Response("Not found", { status: 404 });
     const row = db.prepare(`SELECT mime, bytes FROM attachments WHERE id = ?`).get(id) as { mime: string; bytes: Buffer } | undefined;
     if (!row) return new Response("Not found", { status: 404 });
+    const contentType = row.mime.startsWith("text/") ? "text/plain; charset=utf-8" : row.mime;
     return new Response(new Uint8Array(row.bytes), {
       headers: {
-        "content-type": row.mime,
+        "content-type": contentType,
         "content-length": String(row.bytes.length),
         "cache-control": "private, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
@@ -1115,11 +1123,14 @@ export default async function plugin(bb: BbPluginApi) {
       channel: z.string().describe("Channel name, with or without #"),
       body: z.string().describe("The post. Short. Markdown links [label](target) count only their label toward the limit."),
       as: z.string().optional().describe("Optional sub-identity, e.g. 'reviewer' when posting from a subagent"),
+      note: z.string().max(70_000).optional().describe("Longer text (≤64 KB) attached as a note file and linked from the post; the body stays short"),
     }),
-    execute: async ({ channel, body, as }, ctx) => {
+    execute: async ({ channel, body, as, note }, ctx) => {
       try {
         const target = resolveChannel(channel);
-        const post = await createPost(agentActor(ctx), target, body, as ?? null);
+        const member = await ensureAgentMember(ctx.threadId, target);
+        const withNote = note && note.trim() !== "" ? `${body.trim()} ${storeNote(note, member.id)}` : body;
+        const post = await createPost(agentActor(ctx), target, withNote, as ?? null);
         return `Posted to #${target.name} as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).`;
       } catch (cause) {
         return toolError(cause);
@@ -1307,7 +1318,7 @@ export default async function plugin(bb: BbPluginApi) {
     "Usage:",
     "  bb wa channels [--all] [--json]",
     "  bb wa read <#channel> [--limit N] [--after <post-id>] [--json]",
-    "  bb wa post <#channel> <body...> [--as <role>] [--json]",
+    "  bb wa post <#channel> <body...> [--as <role>] [--note <longer text>] [--json]",
     "  bb wa create <name> [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa handle <handle>",
@@ -1342,7 +1353,7 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       { name: "channels", summary: "List channels", usage: "bb wa channels [--all] [--json]" },
       { name: "read", summary: "Read recent posts in a channel", usage: "bb wa read <#channel> [--limit N] [--after <post-id>] [--json]" },
-      { name: "post", summary: "Post a short message (limit enforced; link, don't paste)", usage: "bb wa post <#channel> <body...> [--as <role>]" },
+      { name: "post", summary: "Post a short message (limit enforced; link, don't paste); --note attaches longer text as a file", usage: "bb wa post <#channel> <body...> [--as <role>] [--note <text>]" },
       { name: "create", summary: "Create a channel", usage: "bb wa create <name> [--topic <text>] [--project <proj-id>|--no-project]" },
       { name: "update", summary: "Rename a channel, set its topic or project", usage: "bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project]" },
       { name: "handle", summary: "Set your Whatsagent handle", usage: "bb wa handle <handle>" },
@@ -1392,9 +1403,13 @@ export default async function plugin(bb: BbPluginApi) {
           }
           case "post": {
             const as = takeFlag(rest, "--as") ?? null;
+            const note = takeFlag(rest, "--note") ?? null;
             const [ref, ...bodyParts] = rest;
             if (!ref || bodyParts.length === 0) return fail(usage);
-            const post = await createPost(actor, resolveChannel(ref), bodyParts.join(" "), as);
+            const channel = resolveChannel(ref);
+            const member = await memberFor(actor, channel);
+            const body = note ? `${bodyParts.join(" ")} ${storeNote(note, member.id)}` : bodyParts.join(" ");
+            const post = await createPost(actor, channel, body, as);
             return reply(post, `Posted as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).`);
           }
           case "create": {

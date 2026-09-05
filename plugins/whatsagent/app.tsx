@@ -151,12 +151,14 @@ type Token =
   | { kind: "handle"; handle: string }
   | { kind: "file"; label: string; path: string; line: number | null }
   | { kind: "code"; text: string }
-  | { kind: "image"; alt: string; id: string };
+  | { kind: "image"; alt: string; id: string }
+  | { kind: "attachment"; label: string; id: string };
 
 const TOKEN_RE = new RegExp(
   [
     String.raw`!\[([^\]]*)\]\(att:([a-f0-9]{16})\)`, // 1,2 inline image attachment
-    String.raw`\[([^\]]+)\]\(([^)\s]+)\)`, // 3,4 markdown link
+    String.raw`\[([^\]]+)\]\(att:([a-f0-9]{16})\)`, // 3,4 attachment link (note, file)
+    String.raw`\[([^\]]+)\]\(([^)\s]+)\)`, // 5,6 markdown link
     String.raw`(https?://[^\s<>()]+[^\s<>().,;:!?'"])`, // 3 url
     String.raw`\b(thr_[a-z0-9]{6,})\b`, // 4 thread id
     String.raw`\b(proj_[a-z0-9]{6,})\b`, // 5 project id
@@ -180,8 +182,9 @@ export function tokenize(body: string): Token[] {
     const index = match.index ?? 0;
     if (index > last) tokens.push({ kind: "text", text: body.slice(last, index) });
     last = index + match[0].length;
-    const [, imgAlt, imgId, mdLabel, mdTarget, url, thread, project, channel, handle, role, code, path] = match;
+    const [, imgAlt, imgId, attLabel, attId, mdLabel, mdTarget, url, thread, project, channel, handle, role, code, path] = match;
     if (imgId !== undefined) tokens.push({ kind: "image", alt: imgAlt ?? "", id: imgId });
+    else if (attId !== undefined) tokens.push({ kind: "attachment", label: attLabel ?? "attachment", id: attId });
     else if (mdLabel !== undefined && mdTarget !== undefined) {
       if (/^https?:\/\//.test(mdTarget)) tokens.push({ kind: "url", href: mdTarget });
       else if (/^thr_/.test(mdTarget)) tokens.push({ kind: "thread", id: mdTarget });
@@ -227,6 +230,7 @@ function ModelChip({ providerId, model, providers, title }: { providerId: string
 }
 const attachmentUrl = (id: string) => `/api/v1/plugins/whatsagent/http/attachment?id=${id}`;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]);
+const TEXT_MIMES = new Set(["text/plain", "text/markdown"]);
 
 function PostBody({
   post,
@@ -252,6 +256,13 @@ function PostBody({
               <code key={index} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
                 {token.text}
               </code>
+            );
+          case "attachment":
+            return (
+              <a key={index} href={attachmentUrl(token.id)} target="_blank" rel="noopener noreferrer" className={cn(linkClass, "inline-flex items-center gap-1 align-baseline")}>
+                <Icon name="FileAttachment" className="size-3.5" />
+                {token.label}
+              </a>
             );
           case "image":
             return (
@@ -893,6 +904,7 @@ function Composer({
   maxPostChars,
   onSend,
   onUpload,
+  onUploadText,
 }: {
   channel: Channel;
   members: Member[];
@@ -900,6 +912,7 @@ function Composer({
   maxPostChars: number;
   onSend: (body: string) => Promise<void>;
   onUpload: (file: File) => Promise<string>;
+  onUploadText: (text: string) => Promise<string>;
 }) {
   const [body, setBodyState] = useState(() => readDraft(channel.id));
   const [caret, setCaret] = useState(0);
@@ -954,14 +967,16 @@ function Composer({
   };
 
   const attach = async (files: Iterable<File>) => {
-    const images = Array.from(files).filter((f) => IMAGE_MIMES.has(f.type));
-    if (images.length === 0 || disabled) return;
+    const accepted = Array.from(files).filter((f) => IMAGE_MIMES.has(f.type) || TEXT_MIMES.has(f.type) || /\.(md|txt)$/i.test(f.name));
+    if (accepted.length === 0 || disabled) return;
     setUploading(true);
     try {
       let next = body;
-      for (const file of images) {
-        const ref = await onUpload(file);
-        next = `${next}${next === "" || next.endsWith(" ") ? "" : " "}![image](${ref}) `;
+      for (const file of accepted) {
+        const isImage = IMAGE_MIMES.has(file.type);
+        const ref = isImage ? await onUpload(file) : await onUploadText(await file.text());
+        const link = isImage ? `![image](${ref})` : `[${file.name || "note"}](${ref})`;
+        next = `${next}${next === "" || next.endsWith(" ") ? "" : " "}${link} `;
       }
       setBody(next);
       setCaret(next.length);
@@ -987,6 +1002,23 @@ function Composer({
   };
   const cost = Array.from(body.replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1")).length;
   const over = cost > maxPostChars;
+  /** Move the whole draft into a note file and leave a link, so the post itself can be a one-line summary. */
+  const attachAsNote = async () => {
+    if (body.trim() === "" || uploading) return;
+    setUploading(true);
+    try {
+      const ref = await onUploadText(body);
+      const next = `[note](${ref}) `;
+      setBody(next);
+      setCaret(next.length);
+      toast.success("Attached as a note; add a one-line summary.");
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setUploading(false);
+      inputRef.current?.focus();
+    }
+  };
   return (
     <div className="relative border-t border-border px-3 pb-3 pt-2 md:px-5">
       {showMenu ? (
@@ -1031,12 +1063,17 @@ function Composer({
             else if (e.key === "Escape") { e.preventDefault(); setDismissed(menuKey); }
           }}
           disabled={disabled}
-          placeholder={disabled ? "This channel is archived" : uploading ? "Uploading image…" : `Message #${channel.name} (paste or drop an image)`}
+          placeholder={disabled ? "This channel is archived" : uploading ? "Uploading…" : `Message #${channel.name}`}
           aria-label="New post"
           aria-autocomplete="list"
           aria-expanded={showMenu}
           className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
         />
+        {over ? (
+          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={attachAsNote} disabled={uploading} aria-label="Move this text into a note file and link it">
+            Attach as note
+          </Button>
+        ) : null}
         {maxPostChars - cost <= 40 ? (
           <span className={cn("shrink-0 font-mono text-[10px] tabular-nums", over ? "text-destructive" : "text-amber-500")} aria-live="polite" title={`${maxPostChars - cost} characters left`}>
             {maxPostChars - cost}
@@ -1081,7 +1118,7 @@ function BoardPage({ subPath }: { subPath: string }) {
         reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
         reader.readAsDataURL(file);
       });
-      const mime = file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml";
+      const mime = file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml" | "text/plain" | "text/markdown";
       return rpc.call("wa_upload", { mime, base64 });
     },
     [rpc],
@@ -1180,6 +1217,10 @@ function BoardPage({ subPath }: { subPath: string }) {
               channels={channels}
               maxPostChars={overview.maxPostChars}
               onUpload={async (file) => (await uploadFile(file)).ref}
+              onUploadText={async (text) => {
+                const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+                return (await rpc.call("wa_upload", { mime: "text/markdown", base64 })).ref;
+              }}
               onSend={async (body) => {
                 try {
                   await rpc.call("wa_post_human", { channelId: active.id, body, identity });
