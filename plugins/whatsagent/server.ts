@@ -165,6 +165,11 @@ export const rpcContract = defineRpcContract({
     output: z.object({ members: z.array(presenceSchema) }),
   },
   /** Human-only: stop another member's watch on a channel. */
+  /** Open a file in the posting thread's panel: the fallback when this page has no file preview. */
+  wa_open_file: {
+    input: z.object({ threadId: z.string(), path: z.string().min(1).max(4000), line: z.number().int().positive().nullable() }),
+    output: z.object({ ok: z.boolean() }),
+  },
   wa_admin_unwatch: {
     input: z.object({ memberId: z.string(), channelId: z.string() }),
     output: z.object({ cleared: z.boolean() }),
@@ -1015,6 +1020,15 @@ export default async function plugin(bb: BbPluginApi) {
     wa_set_member_handle: ({ memberId, handle }) => setHandle(memberId, handle),
     wa_presence: ({ channelId }) => ({ members: presence(channelId) }),
     wa_admin_unwatch: ({ memberId, channelId }) => ({ cleared: clearWatch(memberId, channelId) }),
+    wa_open_file: async ({ threadId, path, line }) => {
+      try {
+        await bb.sdk.threads.open({ threadId, file: { source: "workspace", path, lineNumber: line } });
+        return { ok: true };
+      } catch (cause) {
+        bb.log.warn(`threads.open failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        throw new BoardError("Could not open the file in its thread.");
+      }
+    },
     wa_mark_read: ({ channelId, lastPostId, identity }) => {
       markRead(humanFor(identity).memberId, channelId, lastPostId);
       changed("read", { channelId });

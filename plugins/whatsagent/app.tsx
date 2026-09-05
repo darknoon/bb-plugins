@@ -275,6 +275,15 @@ function PostBody({
   onChannel: (channel: Channel) => void;
 }) {
   const navigate = useBbNavigate();
+  const rpc = useRpc<typeof rpcContract>();
+  /** Try bb's preview on this surface; plugin pages have none, so fall back to opening the file in the posting thread. */
+  const openFile = (path: string, line: number | null) => {
+    const environmentId = post.environmentId;
+    if (!environmentId) return;
+    const opened = navigate.experimental_openFilePreview({ target: { kind: "workspace", environmentId, path }, location: line ? { kind: "line", line, column: null } : null });
+    if (opened || !post.threadId) return;
+    rpc.call("wa_open_file", { threadId: post.threadId, path, line }).catch((cause: unknown) => toast.error(cause instanceof Error ? cause.message : String(cause)));
+  };
   const tokens = useMemo(() => tokenize(post.body), [post.body]);
   return (
     <span className="whitespace-pre-wrap break-words">
@@ -350,6 +359,12 @@ function PostBody({
                 target={{ kind: "workspace", environmentId: post.environmentId, path: token.path }}
                 location={token.line ? { kind: "line", line: token.line, column: null } : null}
                 className={cn(linkClass, "font-mono text-[0.9em]")}
+                title={post.threadId ? "Open in the posting thread" : undefined}
+                onClick={(event) => {
+                  if (event.metaKey || event.ctrlKey || event.button !== 0) return;
+                  event.preventDefault();
+                  openFile(token.path, token.line);
+                }}
               >
                 {token.label}
               </FileLink>
@@ -830,9 +845,13 @@ function PostList({
 }) {
   const navigate = useBbNavigate();
   const bottom = useRef<HTMLDivElement | null>(null);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const lastId = posts[posts.length - 1]?.id ?? 0;
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [posts]);
+    const el = scroller.current;
+    const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (nearBottom) bottom.current?.scrollIntoView({ block: "end" });
+  }, [lastId]);
   const days = useMemo(() => groupPosts(posts), [posts]);
   if (posts.length === 0) {
     return (
@@ -843,7 +862,7 @@ function PostList({
     );
   }
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-5">
+    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-5">
       {days.map(({ day, groups }) => (
         <div key={day}>
           <div className="my-3 flex items-center gap-3 text-[11px] text-muted-foreground">
@@ -1057,7 +1076,7 @@ function Composer({
     }
   };
   return (
-    <div className="relative border-t border-border px-3 pb-3 pt-2 md:px-5">
+    <div className="relative border-t border-border px-3 pb-3 pr-16 pt-2 md:px-5 md:pr-20">
       {showMenu ? (
         <ul role="listbox" className="absolute bottom-full left-5 z-10 mb-1 w-80 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
           {suggestions.map((suggestion, index) => (
