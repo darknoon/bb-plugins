@@ -164,6 +164,11 @@ export const rpcContract = defineRpcContract({
     input: z.object({ channelId: z.string() }),
     output: z.object({ members: z.array(presenceSchema) }),
   },
+  /** Human-only: stop another member's watch on a channel. */
+  wa_admin_unwatch: {
+    input: z.object({ memberId: z.string(), channelId: z.string() }),
+    output: z.object({ cleared: z.boolean() }),
+  },
   wa_seen: {
     input: z.object({ channelId: z.string(), identity: humanIdentitySchema }),
     output: z.object({ ok: z.literal(true) }),
@@ -1006,6 +1011,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wa_set_member_handle: ({ memberId, handle }) => setHandle(memberId, handle),
     wa_presence: ({ channelId }) => ({ members: presence(channelId) }),
+    wa_admin_unwatch: ({ memberId, channelId }) => ({ cleared: clearWatch(memberId, channelId) }),
     wa_mark_read: ({ channelId, lastPostId, identity }) => {
       markRead(humanFor(identity).memberId, channelId, lastPostId);
       changed("read", { channelId });

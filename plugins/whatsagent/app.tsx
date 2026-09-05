@@ -562,7 +562,10 @@ function ChannelSettings({
 }
 
 function describePresence(p: Presence): string {
-  if (p.watchingUntil) return `watching until ${clockTime(p.watchingUntil)}`;
+  if (p.watchingUntil) {
+    const left = Math.max(1, Math.round((p.watchingUntil - Date.now()) / 60_000));
+    return left >= 90 ? `watching, ${Math.round(left / 60)}h left` : `watching, ${left}m left`;
+  }
   if (p.lastSeenAt) {
     const minutes = Math.max(0, Math.round((Date.now() - p.lastSeenAt) / 60_000));
     return minutes === 0 ? "active now" : `active ${minutes}m ago`;
@@ -570,9 +573,17 @@ function describePresence(p: Presence): string {
   return "";
 }
 
-function PresenceChip({ presence, providers }: { presence: Presence[]; providers: ProviderLookup }) {
+function PresenceChip({ presence, channelId, rpc, onChanged }: { presence: Presence[]; channelId: string; rpc: Rpc; onChanged: () => void }) {
   const navigate = useBbNavigate();
   const watching = presence.filter((p) => p.watchingUntil).length;
+  const stopWatch = async (p: Presence) => {
+    try {
+      await rpc.call("wa_admin_unwatch", { memberId: p.memberId, channelId });
+      onChanged();
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -582,26 +593,26 @@ function PresenceChip({ presence, providers }: { presence: Presence[]; providers
           {watching > 0 ? <span className="ml-0.5 size-1.5 rounded-full bg-success" aria-label={`${watching} watching`} /> : null}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-1.5">
+      <PopoverContent align="end" className="w-64 p-1.5">
         <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Here now</div>
         {presence.length === 0 ? <p className="px-2 pb-1 text-sm text-muted-foreground">Nobody is watching or active.</p> : null}
-        {presence.map((p) => {
-          const row = (
-            <>
-              <Avatar handle={p.handle} kind={p.kind} avatarId={p.avatarId} avatarUrl={p.avatarUrl} size="size-5" />
-              <span className={cn("size-1.5 shrink-0 rounded-full", p.watchingUntil ? "bg-success" : "bg-muted-foreground/50")} aria-hidden="true" />
-              <span className="font-medium">@{p.handle}</span>
-              {p.kind === "human" ? <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">human</span> : <span className="min-w-0 flex-1"><ModelChip providerId={p.providerId} model={p.model} providers={providers} title={p.threadTitle ?? undefined} /></span>}
-              <span className="shrink-0 text-[11px] text-muted-foreground">{describePresence(p)}</span>
-            </>
-          );
-          const className = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover";
-          return p.kind === "agent" ? (
-            <button key={p.memberId} type="button" className={className} onClick={() => navigate.toThread(p.memberId)} title="Open thread">{row}</button>
-          ) : (
-            <div key={p.memberId} className={className}>{row}</div>
-          );
-        })}
+        {presence.map((p) => (
+          <div key={p.memberId} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-state-hover">
+            {p.kind === "agent" ? (
+              <button type="button" className="min-w-0 truncate font-medium hover:underline" onClick={() => navigate.toThread(p.memberId)} title={p.threadTitle ?? "Open thread"}>
+                @{p.handle}
+              </button>
+            ) : (
+              <span className="min-w-0 truncate font-medium">@{p.handle}</span>
+            )}
+            <span className={cn("ml-auto shrink-0 text-[11px]", p.watchingUntil ? "text-foreground" : "text-muted-foreground")}>{describePresence(p)}</span>
+            {p.watchingUntil && p.kind === "agent" ? (
+              <button type="button" className="shrink-0 text-xs text-muted-foreground hover:text-destructive" aria-label={`Stop @${p.handle}'s watch`} title="Stop watching this channel" onClick={() => stopWatch(p)}>
+                ×
+              </button>
+            ) : null}
+          </div>
+        ))}
       </PopoverContent>
     </Popover>
   );
@@ -667,7 +678,7 @@ function ChannelHeader({
         <p className="mt-0.5 truncate text-xs text-muted-foreground">{channel.topic || "No topic yet."}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <PresenceChip presence={presence} providers={providers} />
+        <PresenceChip presence={presence} channelId={channel.id} rpc={rpc} onChanged={refetch} />
         <ChannelSettings channel={channel} projects={projects} rpc={rpc} refetch={refetch} onEdit={() => setEditing({ name: channel.name, topic: channel.topic })} />
       </div>
     </header>
@@ -1026,7 +1037,11 @@ function Composer({
           aria-expanded={showMenu}
           className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
         />
-        <span className={cn("shrink-0 font-mono text-[10px]", over ? "text-destructive" : "text-muted-foreground")}>{cost}/{maxPostChars}</span>
+        {maxPostChars - cost <= 40 ? (
+          <span className={cn("shrink-0 font-mono text-[10px] tabular-nums", over ? "text-destructive" : "text-amber-500")} aria-live="polite" title={`${maxPostChars - cost} characters left`}>
+            {maxPostChars - cost}
+          </span>
+        ) : null}
         <Button type="submit" size="sm" className="h-7" disabled={disabled || pending || uploading || over || body.trim() === ""}>
           Post
         </Button>
