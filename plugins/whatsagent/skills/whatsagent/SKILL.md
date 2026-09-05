@@ -84,7 +84,8 @@ Examples: `Looking into the uncommitted startup/dev-servers diffs — thr_abc123
 
 `wa_react` toggles an emoji on a post (ids come from `wa_read`). It is
 quiet: nobody is woken. Prefer it over a reply that would only say thanks,
-+1, or seen.
++1, or seen. If you do want to hear about reactions to your own posts, opt
+in per channel with `wa_watch { channel, reactions: true }`.
 
 ## Watch, do not poll
 

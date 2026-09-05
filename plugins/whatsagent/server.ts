@@ -321,6 +321,7 @@ export default async function plugin(bb: BbPluginApi) {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (post_id, member_id, emoji)
     )`,
+    `ALTER TABLE watches ADD COLUMN wake_on_reactions INTEGER NOT NULL DEFAULT 0`,
   ]);
 
   type ChannelRow = {
@@ -392,7 +393,10 @@ export default async function plugin(bb: BbPluginApi) {
     const post = getPost(postId);
     if (!post) throw new BoardError(`No post ${postId}.`);
     const removed = db.prepare(`DELETE FROM reactions WHERE post_id = ? AND member_id = ? AND emoji = ?`).run(postId, memberId, emoji);
-    if (removed.changes === 0) db.prepare(`INSERT INTO reactions (post_id, member_id, emoji, created_at) VALUES (?, ?, ?, ?)`).run(postId, memberId, emoji, Date.now());
+    if (removed.changes === 0) {
+      db.prepare(`INSERT INTO reactions (post_id, member_id, emoji, created_at) VALUES (?, ?, ?, ?)`).run(postId, memberId, emoji, Date.now());
+      void notifyReaction(post, memberId, emoji);
+    }
     changed("reaction", { channelId: post.channelId });
     return getPost(postId)!;
   }
@@ -708,14 +712,14 @@ export default async function plugin(bb: BbPluginApi) {
   const WATCH_MAX_MINUTES = 8 * 60;
   const ACTIVE_WINDOW_MS = { agent: 10 * 60_000, human: 2 * 60_000 };
 
-  function setWatch(memberId: string, channelId: string, minutes: number): number {
+  function setWatch(memberId: string, channelId: string, minutes: number, wakeOnReactions = false): number {
     const clamped = Math.min(Math.max(Math.round(minutes), 1), WATCH_MAX_MINUTES);
     const until = Date.now() + clamped * 60_000;
     const lastPost = (db.prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM posts WHERE channel_id = ?`).get(channelId) as { id: number }).id;
     db.prepare(
-      `INSERT INTO watches (member_id, channel_id, until, notified_post_id, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(member_id, channel_id) DO UPDATE SET until = excluded.until, notified_post_id = excluded.notified_post_id`,
-    ).run(memberId, channelId, until, lastPost, Date.now());
+      `INSERT INTO watches (member_id, channel_id, until, notified_post_id, created_at, wake_on_reactions) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(member_id, channel_id) DO UPDATE SET until = excluded.until, notified_post_id = excluded.notified_post_id, wake_on_reactions = excluded.wake_on_reactions`,
+    ).run(memberId, channelId, until, lastPost, Date.now(), wakeOnReactions ? 1 : 0);
     markRead(memberId, channelId, lastPost);
     changed("watch", { channelId });
     return until;
@@ -746,6 +750,19 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const fmtClock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  /** Opt-in: wake a post's author when someone reacts, if their watch on that channel asked for it. */
+  async function notifyReaction(post: Post, reactorId: string, emoji: string) {
+    if (post.memberKind !== "agent" || post.memberId === reactorId) return;
+    const watch = db.prepare(`SELECT 1 FROM watches WHERE member_id = ? AND channel_id = ? AND until > ? AND wake_on_reactions = 1`).get(post.memberId, post.channelId, Date.now());
+    if (!watch) return;
+    const reactor = getMember(reactorId);
+    const channel = getChannelById(post.channelId);
+    if (!reactor || !channel) return;
+    const channelRef = `#${channel.name}`;
+    const text = `[Whatsagent] @${reactor.handle} reacted ${emoji} to your post in ${channelRef}: "${post.body}"\nNo reply needed unless it changes your plan.`;
+    await deliver(post.memberId, text, channel, channelRef);
+  }
 
   /** Wake watching agents. Coalesced: skip a watcher that has not read since its last wake. */
   async function notifyWatchers(post: Post, channel: Channel, alreadyNotified: Set<string>) {
@@ -1046,13 +1063,14 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({
       channel: z.string(),
       minutes: z.number().int().min(1).max(WATCH_MAX_MINUTES).optional().describe("How long to watch; default 30"),
+      reactions: z.boolean().optional().describe("Also wake when someone reacts to one of your posts here; default false"),
     }),
-    execute: async ({ channel, minutes }, ctx) => {
+    execute: async ({ channel, minutes, reactions }, ctx) => {
       try {
         const target = resolveChannel(channel);
         const member = await ensureAgentMember(ctx.threadId, target);
-        const until = setWatch(member.id, target.id, minutes ?? 30);
-        return `Watching #${target.name} until ${fmtClock(until)} as @${member.handle}. New posts by others will wake this thread; wa_unwatch stops early.`;
+        const until = setWatch(member.id, target.id, minutes ?? 30, reactions ?? false);
+        return `Watching #${target.name} until ${fmtClock(until)} as @${member.handle}. New posts by others${reactions ? " and reactions to your posts" : ""} will wake this thread; wa_unwatch stops early.`;
       } catch (cause) {
         return toolError(cause);
       }
@@ -1145,7 +1163,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb wa handle <handle>",
     "  bb wa members [--json]",
     "  bb wa react <post-id> <emoji>",
-    "  bb wa watch <#channel> [--for <minutes>]      (default 30)",
+    "  bb wa watch <#channel> [--for <minutes>] [--reactions]   (default 30)",
     "  bb wa unwatch <#channel>",
     "  bb wa here <#channel> [--json]",
     "  bb wa archive|unarchive|lock|unlock <#channel>     (human only)",
@@ -1179,7 +1197,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "handle", summary: "Set your Whatsagent handle", usage: "bb wa handle <handle>" },
       { name: "members", summary: "List members and handles", usage: "bb wa members [--json]" },
       { name: "react", summary: "Toggle an emoji reaction on a post (never wakes anyone)", usage: "bb wa react <post-id> <emoji>" },
-      { name: "watch", summary: "Watch a channel: new posts by others wake your thread", usage: "bb wa watch <#channel> [--for <minutes>]" },
+      { name: "watch", summary: "Watch a channel: new posts by others wake your thread", usage: "bb wa watch <#channel> [--for <minutes>] [--reactions]" },
       { name: "unwatch", summary: "Stop watching a channel", usage: "bb wa unwatch <#channel>" },
       { name: "here", summary: "Who is watching or recently active in a channel", usage: "bb wa here <#channel> [--json]" },
       { name: "archive", summary: "Archive a channel (human only)", usage: "bb wa archive <#channel>" },
@@ -1268,11 +1286,12 @@ export default async function plugin(bb: BbPluginApi) {
           }
           case "watch": {
             const minutes = Number.parseInt(takeFlag(rest, "--for") ?? "30", 10);
+            const withReactions = hasFlag(rest, "--reactions");
             const [ref] = rest;
             if (!ref || !Number.isFinite(minutes)) return fail(usage);
             const channel = resolveChannel(ref);
             const member = await memberFor(actor, channel);
-            const until = setWatch(member.id, channel.id, minutes);
+            const until = setWatch(member.id, channel.id, minutes, withReactions);
             return reply({ channelId: channel.id, until }, `Watching #${channel.name} until ${fmtClock(until)}.${actor.kind === "agent" ? " New posts by others wake this thread." : ""}`);
           }
           case "unwatch": {
