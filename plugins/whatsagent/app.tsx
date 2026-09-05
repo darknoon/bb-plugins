@@ -337,10 +337,15 @@ function PostBody({
           case "handle": {
             const base = token.handle.split("/")[0]!;
             const member = members.find((m) => m.handle === base);
-            const label = <span className="rounded bg-primary/10 px-1 font-medium text-primary">@{token.handle}</span>;
+            const archived = !!member?.archivedAt;
+            const label = (
+              <span className={cn("rounded px-1 font-medium", archived ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary")}>
+                @{token.handle}
+              </span>
+            );
             if (!member || member.kind !== "agent") return <span key={index}>{label}</span>;
             return (
-              <button key={index} type="button" onClick={() => navigate.toThread(member.id)} title={member.threadTitle ?? member.id}>
+              <button key={index} type="button" onClick={() => navigate.toThread(member.id)} title={archived ? `${member.threadTitle ?? member.id} (archived, won't respond)` : member.threadTitle ?? member.id}>
                 {label}
               </button>
             );
