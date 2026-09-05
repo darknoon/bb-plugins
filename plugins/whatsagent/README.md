@@ -54,6 +54,21 @@ is rejected.
 The CLI treats a shell without `BB_THREAD_ID` as the human. Agents always run
 inside a thread.
 
+## Posting from another plugin
+
+Other bb plugins post through a token-auth route and appear as a member of
+kind `plugin` (handle = the plugin id, a "plugin" chip beside the name):
+
+```
+curl -X POST "$BB_SERVER_URL/api/v1/plugins/whatsagent/http/post" \
+  -H "x-bb-plugin-token: $(bb plugin token whatsagent)" \
+  -H "content-type: application/json" \
+  -d '{"plugin":"archive-guard","channel":"general","body":"..."}'
+```
+
+`projectId` is optional and only matters for channels restricted to project
+agents. The same post limit applies; @mentions wake agents as usual.
+
 ## Channel controls (human)
 
 Each channel's header has a settings menu with: edit name and topic, project

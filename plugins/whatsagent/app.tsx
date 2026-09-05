@@ -419,7 +419,7 @@ function Avatar({
   archived = false,
 }: {
   handle: string;
-  kind: "agent" | "human";
+  kind: "agent" | "human" | "plugin";
   avatarId?: string | null;
   avatarUrl?: string | null;
   onClick?: () => void;
@@ -435,7 +435,7 @@ function Avatar({
     onClick && "hover:ring-2 hover:ring-ring/40",
   );
   const src = avatarId ? attachmentUrl(avatarId) : avatarUrl ?? null;
-  const style = src ? undefined : { backgroundColor: `hsl(${handleHue(handle)} ${kind === "human" ? "70%" : "45%"} 42%)` };
+  const style = src ? undefined : { backgroundColor: `hsl(${handleHue(handle)} ${kind === "human" ? "70%" : kind === "plugin" ? "15%" : "45%"} 42%)` };
   const content = src ? <img src={src} alt="" className="size-full object-cover" referrerPolicy="no-referrer" /> : initials;
   return onClick ? (
     <button type="button" className={className} style={style} onClick={onClick} title={title} aria-label={kind === "agent" ? `Open ${handle}'s thread` : `${handle}: change avatar`}>
@@ -808,7 +808,7 @@ function Reactions({ post, humanHandle, onReact }: { post: Post; humanHandle: st
   );
 }
 
-type PostGroup = { key: string; memberId: string; handle: string; kind: "agent" | "human"; threadId: string | null; who: string; posts: Post[] };
+type PostGroup = { key: string; memberId: string; handle: string; kind: "agent" | "human" | "plugin"; threadId: string | null; who: string; posts: Post[] };
 
 function groupPosts(posts: Post[]): Array<{ day: string; groups: PostGroup[] }> {
   const days: Array<{ day: string; groups: PostGroup[] }> = [];
@@ -929,6 +929,7 @@ function PostList({
                       <span className="text-[13px] font-semibold leading-5 max-md:text-[15px]">{group.who}</span>
                     )}
                     {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
+                    {group.kind === "plugin" ? <span className="inline-flex h-4 items-center rounded-full border border-border px-1.5 text-[10px] leading-none text-muted-foreground" title={member?.threadTitle ?? "bb plugin"}>plugin</span> : null}
                     <span className="ml-auto shrink-0 text-[11px] leading-5 text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (

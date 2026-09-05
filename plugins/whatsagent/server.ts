@@ -40,7 +40,7 @@ export type Channel = z.infer<typeof channelSchema>;
 export const memberSchema = z.object({
   id: z.string(),
   handle: z.string(),
-  kind: z.enum(["agent", "human"]),
+  kind: z.enum(["agent", "human", "plugin"]),
   providerId: z.string().nullable(),
   /** Model the thread last resolved with; recorded by configure(), null until its next turn. */
   model: z.string().nullable(),
@@ -61,7 +61,7 @@ export const postSchema = z.object({
   channelId: z.string(),
   memberId: z.string(),
   handle: z.string(),
-  memberKind: z.enum(["agent", "human"]),
+  memberKind: z.enum(["agent", "human", "plugin"]),
   asRole: z.string().nullable(),
   body: z.string(),
   environmentId: z.string().nullable(),
@@ -91,7 +91,7 @@ export type HumanIdentity = z.infer<typeof humanIdentitySchema>;
 export const presenceSchema = z.object({
   memberId: z.string(),
   handle: z.string(),
-  kind: z.enum(["agent", "human"]),
+  kind: z.enum(["agent", "human", "plugin"]),
   threadTitle: z.string().nullable(),
   avatarId: z.string().nullable(),
   avatarUrl: z.string().nullable(),
@@ -265,7 +265,9 @@ export function slugify(input: string): string {
 
 type Actor =
   | { kind: "human"; memberId: string }
-  | { kind: "agent"; threadId: string; projectId: string | null };
+  | { kind: "agent"; threadId: string; projectId: string | null }
+  /** Another bb plugin posting through the token-auth HTTP route; treated like an agent with no project. */
+  | { kind: "plugin"; memberId: string; projectId: string | null };
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -373,7 +375,7 @@ export default async function plugin(bb: BbPluginApi) {
     post_count: number; last_post_at: number | null;
   };
   type MemberRow = {
-    id: string; handle: string; kind: "agent" | "human"; provider_id: string | null; model: string | null;
+    id: string; handle: string; kind: "agent" | "human" | "plugin"; provider_id: string | null; model: string | null;
     thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null; avatar_url: string | null; archived_at: number | null;
   };
   const MEMBER_SELECT = `
@@ -383,7 +385,7 @@ export default async function plugin(bb: BbPluginApi) {
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
     environment_id: string | null; thread_id: string | null; created_at: number;
-    handle: string; member_kind: "agent" | "human";
+    handle: string; member_kind: "agent" | "human" | "plugin";
   };
 
   const CHANNEL_SELECT = `
@@ -619,7 +621,21 @@ export default async function plugin(bb: BbPluginApi) {
 
   function memberFor(actor: Actor, homeChannel: Channel | null): Promise<Member> {
     if (actor.kind === "human") return Promise.resolve(getMember(actor.memberId) ?? getMember(HUMAN_MEMBER_ID)!);
+    if (actor.kind === "plugin") return Promise.resolve(getMember(actor.memberId)!);
     return ensureAgentMember(actor.threadId, homeChannel);
+  }
+
+  /** A member for another bb plugin: id `plugin:<id>`, handle = the plugin id. */
+  function ensurePluginMember(pluginId: string): Member {
+    const slug = slugify(pluginId);
+    if (!slug) throw new BoardError("Plugin id is empty.");
+    const id = `plugin:${slug}`;
+    const existing = getMember(id);
+    if (existing) return existing;
+    db.prepare(`INSERT INTO members (id, handle, kind, thread_title, created_at) VALUES (?, ?, 'plugin', ?, ?)`)
+      .run(id, uniqueHandle(slug), `bb plugin ${slug}`, Date.now());
+    changed("member");
+    return getMember(id)!;
   }
 
   /**
@@ -810,7 +826,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const WATCH_MAX_MINUTES = 8 * 60;
   const WAKE_COALESCE_MS = 45_000;
-  const ACTIVE_WINDOW_MS = { agent: 10 * 60_000, human: 2 * 60_000 };
+  const ACTIVE_WINDOW_MS = { agent: 10 * 60_000, human: 2 * 60_000, plugin: 10 * 60_000 };
 
   function setWatch(memberId: string, channelId: string, minutes: number, wakeOnReactions = false): number {
     const clamped = Math.min(Math.max(Math.round(minutes), 1), WATCH_MAX_MINUTES);
@@ -842,7 +858,7 @@ export default async function plugin(bb: BbPluginApi) {
               (SELECT until FROM watches w WHERE w.member_id = m.id AND w.channel_id = ? AND w.until > ?) AS watching_until,
               (SELECT seen_at FROM member_reads r WHERE r.member_id = m.id AND r.channel_id = ?) AS seen_at
        FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`,
-    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; avatar_id: string | null; avatar_url: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
+    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human" | "plugin"; thread_title: string | null; avatar_id: string | null; avatar_url: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
     return rows
       .filter((r) => r.watching_until !== null || (r.seen_at !== null && now - r.seen_at < ACTIVE_WINDOW_MS[r.kind]))
       .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, avatarId: r.avatar_id, avatarUrl: r.avatar_url, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
@@ -996,6 +1012,34 @@ export default async function plugin(bb: BbPluginApi) {
   // Tailscale-User-* headers naming the connecting tailnet user. This route
   // echoes what actually arrives so the page (and we) can see whether identity
   // is available on a given path (tailnet vs bb connect vs localhost).
+  // Other bb plugins post here with the Whatsagent token (`bb plugin token whatsagent`):
+  //   POST /api/v1/plugins/whatsagent/http/post  {"plugin":"archive-guard","channel":"general","body":"..."}
+  // The post is attributed to a member of kind "plugin", never to a human or a thread.
+  bb.http.route(
+    "POST",
+    "/post",
+    async (c) => {
+      let payload: unknown;
+      try {
+        payload = await c.req.json();
+      } catch {
+        return Response.json({ ok: false, error: "Body must be JSON." }, { status: 400 });
+      }
+      const parsed = z.object({ plugin: z.string().min(1).max(64), channel: z.string().min(1), body: z.string().min(1), projectId: z.string().nullable().optional() }).safeParse(payload);
+      if (!parsed.success) return Response.json({ ok: false, error: "Expected { plugin, channel, body, projectId? }." }, { status: 400 });
+      try {
+        const member = ensurePluginMember(parsed.data.plugin);
+        const channel = resolveChannel(parsed.data.channel);
+        const post = await createPost({ kind: "plugin", memberId: member.id, projectId: parsed.data.projectId ?? null }, channel, parsed.data.body, null);
+        return Response.json({ ok: true, post });
+      } catch (cause) {
+        const status = cause instanceof BoardError ? 422 : 500;
+        return Response.json({ ok: false, error: cause instanceof Error ? cause.message : String(cause) }, { status });
+      }
+    },
+    { auth: "token" },
+  );
+
   bb.http.route("GET", "/whoami", (c) => {
     const pick = (name: string) => c.req.header(name) ?? null;
     return Response.json({
