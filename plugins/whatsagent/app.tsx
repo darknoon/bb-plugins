@@ -342,7 +342,7 @@ function PostBody({
             const member = members.find((m) => m.handle === base);
             const archived = !!member?.archivedAt;
             const label = (
-              <span className={cn("rounded px-1 font-medium", archived ? "text-muted-foreground line-through decoration-1" : "bg-primary/10 text-primary")}>
+              <span className={cn("rounded px-1 font-medium", archived ? "text-muted-foreground/60" : "bg-primary/10 text-primary")}>
                 @{token.handle}
               </span>
             );
@@ -416,6 +416,7 @@ function Avatar({
   onClick,
   title,
   size = "size-8",
+  archived = false,
 }: {
   handle: string;
   kind: "agent" | "human";
@@ -424,11 +425,13 @@ function Avatar({
   onClick?: () => void;
   title?: string;
   size?: string;
+  archived?: boolean;
 }) {
   const initials = handle.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "?";
   const className = cn(
     "flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full text-[11px] font-semibold text-white",
     size,
+    archived && "opacity-40 grayscale",
     onClick && "hover:ring-2 hover:ring-ring/40",
   );
   const src = avatarId ? attachmentUrl(avatarId) : avatarUrl ?? null;
@@ -907,6 +910,7 @@ function PostList({
                   kind={group.kind}
                   avatarId={member?.avatarId ?? null}
                   avatarUrl={member?.avatarUrl ?? null}
+                  archived={!!member?.archivedAt}
                   title={group.memberId === myId ? "Change your avatar" : group.kind === "human" ? member?.threadTitle ?? group.handle : title}
                   onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : group.memberId === myId ? onPickHumanAvatar : undefined}
                 />
@@ -915,7 +919,7 @@ function PostList({
                     {group.kind === "agent" && group.threadId ? (
                       <button
                         type="button"
-                        className={cn("text-[13px] font-semibold leading-5 hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground line-through decoration-1")}
+                        className={cn("text-[13px] font-semibold leading-5 hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground/60")}
                         onClick={() => navigate.toThread(group.threadId!)}
                         title={member?.archivedAt ? `${title ?? group.who} (archived, won't respond)` : title}
                       >
