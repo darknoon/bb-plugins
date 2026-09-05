@@ -939,7 +939,7 @@ function PostList({
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
                       {/* Same recipe as bb's message action row: bare 20px buttons, fade in on hover, no box. */}
-                      <span className="absolute -top-3 right-[13px] flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5 opacity-0 shadow-sm transition-opacity duration-150 group-hover/message:opacity-100 group-focus-within/message:opacity-100 has-[[data-state=open]]:opacity-100 max-md:pointer-coarse:hidden">
+                      <span className="absolute -top-3 right-[13px] flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5 opacity-0 transition-opacity duration-150 group-hover/message:opacity-100 group-focus-within/message:opacity-100 has-[[data-state=open]]:opacity-100 max-md:pointer-coarse:hidden">
                         {QUICK_REACTIONS.map((emoji) => (
                           <button key={emoji} type="button" className={MESSAGE_ACTION_CLASS} aria-label={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
                             <span aria-hidden="true">{emoji}</span>
