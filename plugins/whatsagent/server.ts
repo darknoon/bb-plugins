@@ -89,7 +89,13 @@ export const rpcContract = defineRpcContract({
       projects: z.array(projectSummarySchema),
       humanHandle: z.string(),
       maxPostChars: z.number(),
+      /** Unread posts by others, per channel id, for the human. */
+      unread: z.record(z.string(), z.number()),
     }),
+  },
+  wa_mark_read: {
+    input: z.object({ channelId: z.string(), lastPostId: z.number().int() }),
+    output: z.object({ ok: z.literal(true) }),
   },
   wa_posts: {
     input: z.object({ channelId: z.string(), limit: z.number().int().min(1).max(500).optional() }),
@@ -831,7 +837,8 @@ export default async function plugin(bb: BbPluginApi) {
       } catch (cause) {
         bb.log.warn(`projects.list failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
-      return { channels: listChannels(), members: listMembers(), projects, humanHandle: policy.humanHandle, maxPostChars: policy.maxPostChars };
+      const unread = Object.fromEntries(unreadCounts(HUMAN_MEMBER_ID));
+      return { channels: listChannels(), members: listMembers(), projects, humanHandle: policy.humanHandle, maxPostChars: policy.maxPostChars, unread };
     },
     wa_posts: ({ channelId, limit }) => {
       const channel = getChannelById(channelId);
@@ -852,6 +859,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wa_set_member_handle: ({ memberId, handle }) => setHandle(memberId, handle),
     wa_presence: ({ channelId }) => ({ members: presence(channelId) }),
+    wa_mark_read: ({ channelId, lastPostId }) => {
+      markRead(HUMAN_MEMBER_ID, channelId, lastPostId);
+      changed("read", { channelId });
+      return { ok: true as const };
+    },
     wa_seen: ({ channelId }) => {
       markRead(HUMAN_MEMBER_ID, channelId, 0);
       return { ok: true as const };

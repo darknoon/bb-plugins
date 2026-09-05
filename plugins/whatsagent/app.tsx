@@ -36,6 +36,7 @@ type Overview = {
   projects: Array<{ id: string; name: string }>;
   humanHandle: string;
   maxPostChars: number;
+  unread: Record<string, number>;
 };
 
 // ---------------------------------------------------------------------------
@@ -70,7 +71,11 @@ function usePosts(rpc: Rpc, channelId: string | null) {
       return;
     }
     rpc.call("wa_posts", { channelId, limit: 300 }).then(
-      (result) => setPosts(result.posts),
+      (result) => {
+        setPosts(result.posts);
+        const last = result.posts[result.posts.length - 1];
+        if (last) void rpc.call("wa_mark_read", { channelId, lastPostId: last.id }).catch(() => undefined);
+      },
       (cause: unknown) => toast.error(cause instanceof Error ? cause.message : String(cause)),
     );
   }, [rpc, channelId]);
@@ -330,11 +335,13 @@ function Avatar({ handle, kind, onClick, title }: { handle: string; kind: "agent
 function ChannelList({
   channels,
   activeId,
+  unread,
   onSelect,
   onCreate,
 }: {
   channels: Channel[];
   activeId: string | null;
+  unread: Record<string, number>;
   onSelect: (channel: Channel) => void;
   onCreate: (name: string) => Promise<void>;
 }) {
@@ -354,22 +361,27 @@ function ChannelList({
     setName("");
     setCreating(false);
   };
-  const row = (channel: Channel) => (
-    <button
-      key={channel.id}
-      type="button"
-      onClick={() => onSelect(channel)}
-      className={cn(
-        "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 hover:bg-state-hover",
-        channel.id === activeId ? "bg-state-active font-medium text-foreground" : "text-muted-foreground",
-        channel.archivedAt && "italic",
-      )}
-    >
-      <span className="w-3 text-center opacity-50">#</span>
-      <span className="min-w-0 flex-1 truncate">{channel.name}</span>
-      {channel.lockedAt ? <Icon name="Lock" className="size-3 opacity-60" /> : null}
-    </button>
-  );
+  const row = (channel: Channel) => {
+    const count = channel.id === activeId ? 0 : unread[channel.id] ?? 0;
+    return (
+      <button
+        key={channel.id}
+        type="button"
+        onClick={() => onSelect(channel)}
+        className={cn(
+          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 hover:bg-state-hover",
+          channel.id === activeId ? "bg-state-active font-medium text-foreground" : count > 0 ? "font-semibold text-foreground" : "text-muted-foreground",
+          channel.archivedAt && "italic",
+        )}
+        aria-label={count > 0 ? `#${channel.name}, ${count} unread` : undefined}
+      >
+        <span className="w-3 text-center opacity-50">#</span>
+        <span className="min-w-0 flex-1 truncate">{channel.name}</span>
+        {channel.lockedAt ? <Icon name="Lock" className="size-3 opacity-60" /> : null}
+        {count > 0 ? <span className="min-w-4 rounded-full bg-primary px-1.5 text-center text-[10px] font-semibold leading-4 text-primary-foreground">{count}</span> : null}
+      </button>
+    );
+  };
   return (
     <nav className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-card/40">
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-2">
@@ -981,6 +993,7 @@ function BoardPage({ subPath }: { subPath: string }) {
       <ChannelList
         channels={channels}
         activeId={active?.id ?? null}
+        unread={overview.unread}
         onSelect={select}
         onCreate={async (name) => {
           try {
