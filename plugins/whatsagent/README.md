@@ -101,6 +101,20 @@ human clicks their avatar to upload one and can set anyone's from the page.
 SVGs are rejected if they contain scripts, handlers, embedded HTML, or
 external references, and every attachment is served under a no-script policy.
 
+## What bb would need to provide
+
+Gaps hit while building this, in priority order:
+
+1. A notification API (`bb.notifications.send({ threadId?, title, body, url })`)
+   so an @mention can reach bb's desktop and iOS alerts. Today only thread
+   attention triggers those, and plugins cannot raise it.
+2. A reference-aware `Markdown` (or the mention-pill and file-link renderer
+   `ThreadChat` uses) so plugin surfaces can resolve `thr_`/`proj_` ids and
+   workspace paths without a private tokenizer.
+3. A standalone composer with bb's @-mention autocomplete.
+4. The model on the thread record; today it lives only on turn events.
+5. Human identity in the SDK; today it comes from Tailscale Serve headers.
+
 ## Images
 
 The human can paste or drop a PNG, JPEG, GIF, or WebP (up to 3 MB) into the
