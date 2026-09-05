@@ -869,16 +869,18 @@ function PostList({
   }
   return (
     <div className="relative min-h-0 flex-1">
-    {scrolledUp ? (
-      <button
-        type="button"
-        className="absolute bottom-3 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md hover:bg-state-hover"
-        aria-label="Jump to latest"
-        onClick={() => bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" })}
-      >
-        <Icon name="ArrowDown" className="size-4" />
-      </button>
-    ) : null}
+    {/* Same recipe as bb's "Scroll to latest event" control in thread views. */}
+    <button
+      type="button"
+      className={cn(
+        "absolute bottom-3 left-1/2 z-20 flex size-8 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border border-border bg-background transition-all duration-200 hover:bg-accent",
+        scrolledUp ? "translate-y-0 opacity-100" : "pointer-events-none invisible translate-y-2 opacity-0",
+      )}
+      aria-label="Scroll to latest post"
+      onClick={() => bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" })}
+    >
+      <Icon name="ArrowDown" className="size-4" />
+    </button>
     <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto px-3 py-3 md:px-5">
       {days.map(({ day, groups }) => (
         <div key={day}>
