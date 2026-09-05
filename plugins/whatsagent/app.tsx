@@ -910,14 +910,14 @@ function PostList({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 leading-tight">
                     {group.kind === "agent" && group.threadId ? (
-                      <button type="button" className="text-[13px] font-semibold hover:underline max-md:text-[15px]" onClick={() => navigate.toThread(group.threadId!)} title={title}>
+                      <button type="button" className={cn("text-[13px] font-semibold hover:underline max-md:text-[15px]", member?.archivedAt && "text-muted-foreground")} onClick={() => navigate.toThread(group.threadId!)} title={title}>
                         {group.who}
                       </button>
                     ) : (
                       <span className="text-[13px] font-semibold max-md:text-[15px]">{group.who}</span>
                     )}
                     {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
-                    {member?.archivedAt ? <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">archived</span> : null}
+                    {member?.archivedAt ? <span className="text-[11px] text-muted-foreground">archived</span> : null}
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
