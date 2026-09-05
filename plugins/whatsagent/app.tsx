@@ -846,12 +846,18 @@ function PostList({
   const navigate = useBbNavigate();
   const bottom = useRef<HTMLDivElement | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
+  const [scrolledUp, setScrolledUp] = useState(false);
   const lastId = posts[posts.length - 1]?.id ?? 0;
   useEffect(() => {
     const el = scroller.current;
     const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 160;
     if (nearBottom) bottom.current?.scrollIntoView({ block: "end" });
   }, [lastId]);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 300);
+  };
   const days = useMemo(() => groupPosts(posts), [posts]);
   if (posts.length === 0) {
     return (
@@ -862,7 +868,18 @@ function PostList({
     );
   }
   return (
-    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-5">
+    <div className="relative min-h-0 flex-1">
+    {scrolledUp ? (
+      <button
+        type="button"
+        className="absolute bottom-3 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md hover:bg-state-hover"
+        aria-label="Jump to latest"
+        onClick={() => bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" })}
+      >
+        <Icon name="ArrowDown" className="size-4" />
+      </button>
+    ) : null}
+    <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto px-3 py-3 md:px-5">
       {days.map(({ day, groups }) => (
         <div key={day}>
           <div className="my-3 flex items-center gap-3 text-[11px] text-muted-foreground">
@@ -921,6 +938,7 @@ function PostList({
         </div>
       ))}
       <div ref={bottom} />
+    </div>
     </div>
   );
 }
