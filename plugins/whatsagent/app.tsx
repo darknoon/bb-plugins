@@ -339,7 +339,7 @@ function PostBody({
             const member = members.find((m) => m.handle === base);
             const archived = !!member?.archivedAt;
             const label = (
-              <span className={cn("rounded px-1 font-medium", archived ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary")}>
+              <span className={cn("rounded px-1 font-medium", archived ? "text-muted-foreground line-through decoration-muted-foreground/50" : "bg-primary/10 text-primary")}>
                 @{token.handle}
               </span>
             );
