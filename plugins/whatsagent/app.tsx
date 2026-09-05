@@ -9,6 +9,7 @@ import type { FormEvent, ReactNode } from "react";
 import {
   definePluginApp,
   experimental_FileLink as FileLink,
+  experimental_useProviders as useProviders,
   UrlLink,
   useBbNavigate,
   useRealtime,
@@ -163,6 +164,24 @@ export function tokenize(body: string): Token[] {
 }
 
 const linkClass = "text-primary underline-offset-2 hover:underline";
+
+type ProviderLookup = Map<string, { displayName: string; logoUrl: string | null }>;
+
+/** Short model name for a chip: drops a leading provider family prefix and date suffixes. */
+function shortModel(model: string): string {
+  return model.replace(/^(claude|gpt|gemini|openai)[-_]/i, "").replace(/-\d{8}$/, "");
+}
+
+function ModelChip({ providerId, model, providers, title }: { providerId: string | null; model: string | null; providers: ProviderLookup; title?: string }) {
+  if (!providerId && !model) return null;
+  const provider = providerId ? providers.get(providerId) : undefined;
+  return (
+    <span className="inline-flex h-4 shrink-0 items-center gap-1 rounded-full border border-border px-1.5 text-[10px] leading-none text-muted-foreground" title={title ?? `${provider?.displayName ?? providerId ?? ""} ${model ?? ""}`.trim()}>
+      {provider?.logoUrl ? <img src={provider.logoUrl} alt="" className="size-2.5 rounded-sm" /> : null}
+      <span className="max-w-32 truncate">{model ? shortModel(model) : provider?.displayName ?? providerId}</span>
+    </span>
+  );
+}
 const attachmentUrl = (id: string) => `/api/v1/plugins/whatsagent/http/attachment?id=${id}`;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
@@ -328,7 +347,7 @@ function ChannelList({
       type="button"
       onClick={() => onSelect(channel)}
       className={cn(
-        "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-none hover:bg-state-hover",
+        "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 hover:bg-state-hover",
         channel.id === activeId ? "bg-state-active font-medium text-foreground" : "text-muted-foreground",
         channel.archivedAt && "italic",
       )}
@@ -473,7 +492,7 @@ function describePresence(p: Presence): string {
   return "";
 }
 
-function PresenceChip({ presence }: { presence: Presence[] }) {
+function PresenceChip({ presence, providers }: { presence: Presence[]; providers: ProviderLookup }) {
   const navigate = useBbNavigate();
   const watching = presence.filter((p) => p.watchingUntil).length;
   return (
@@ -493,7 +512,7 @@ function PresenceChip({ presence }: { presence: Presence[] }) {
             <>
               <span className={cn("size-2 shrink-0 rounded-full", p.watchingUntil ? "bg-success" : "bg-muted-foreground/50")} />
               <span className="font-medium">@{p.handle}</span>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{p.kind === "human" ? "human" : p.threadTitle ?? ""}</span>
+              {p.kind === "human" ? <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">human</span> : <span className="min-w-0 flex-1"><ModelChip providerId={p.providerId} model={p.model} providers={providers} title={p.threadTitle ?? undefined} /></span>}
               <span className="shrink-0 text-[11px] text-muted-foreground">{describePresence(p)}</span>
             </>
           );
@@ -513,12 +532,14 @@ function ChannelHeader({
   channel,
   projects,
   presence,
+  providers,
   rpc,
   refetch,
 }: {
   channel: Channel;
   projects: Array<{ id: string; name: string }>;
   presence: Presence[];
+  providers: ProviderLookup;
   rpc: Rpc;
   refetch: () => void;
 }) {
@@ -560,7 +581,7 @@ function ChannelHeader({
         <p className="mt-0.5 truncate text-xs text-muted-foreground">{channel.topic || "No topic yet."}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <PresenceChip presence={presence} />
+        <PresenceChip presence={presence} providers={providers} />
         <ChannelSettings channel={channel} projects={projects} rpc={rpc} refetch={refetch} onEdit={() => setEditing({ name: channel.name, topic: channel.topic })} />
       </div>
     </header>
@@ -594,12 +615,14 @@ function PostList({
   posts,
   members,
   channels,
+  providers,
   onChannel,
   onDelete,
 }: {
   posts: Post[];
   members: Member[];
   channels: Channel[];
+  providers: ProviderLookup;
   onChannel: (channel: Channel) => void;
   onDelete: (post: Post) => void;
 }) {
@@ -641,7 +664,7 @@ function PostList({
                     ) : (
                       <span className="text-[13px] font-semibold">{group.who}</span>
                     )}
-                    {member?.threadTitle && group.kind === "agent" ? <span className="truncate text-[11px] text-muted-foreground">{member.threadTitle}</span> : null}
+                    {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
@@ -874,6 +897,11 @@ function BoardPage({ subPath }: { subPath: string }) {
   }, [channels, subPath]);
   const { posts, refetch: refetchPosts } = usePosts(rpc, active?.id ?? null);
   const presence = usePresence(rpc, active?.id ?? null);
+  const providerRoster = useProviders();
+  const providers = useMemo<ProviderLookup>(
+    () => new Map(providerRoster.providers.map((p) => [p.id, { displayName: p.displayName, logoUrl: p.logoUrl ?? null }])),
+    [providerRoster.providers],
+  );
   const select = useCallback((channel: Channel) => navigate.toPluginPanel("whatsagent", { subPath: channel.name }), [navigate]);
   const report = (cause: unknown) => toast.error(cause instanceof Error ? cause.message : String(cause));
 
@@ -899,11 +927,12 @@ function BoardPage({ subPath }: { subPath: string }) {
       <section className="flex min-w-0 flex-1 flex-col">
         {active ? (
           <>
-            <ChannelHeader channel={active} projects={overview.projects} presence={presence} rpc={rpc} refetch={refetch} />
+            <ChannelHeader channel={active} projects={overview.projects} presence={presence} providers={providers} rpc={rpc} refetch={refetch} />
             <PostList
               posts={posts}
               members={overview.members}
               channels={channels}
+              providers={providers}
               onChannel={select}
               onDelete={async (post) => {
                 try {

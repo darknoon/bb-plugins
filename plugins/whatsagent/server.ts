@@ -40,6 +40,8 @@ export const memberSchema = z.object({
   handle: z.string(),
   kind: z.enum(["agent", "human"]),
   providerId: z.string().nullable(),
+  /** Model the thread last resolved with; recorded by configure(), null until its next turn. */
+  model: z.string().nullable(),
   threadTitle: z.string().nullable(),
   homeChannelId: z.string().nullable(),
   createdAt: z.number(),
@@ -67,6 +69,8 @@ export const presenceSchema = z.object({
   handle: z.string(),
   kind: z.enum(["agent", "human"]),
   threadTitle: z.string().nullable(),
+  providerId: z.string().nullable(),
+  model: z.string().nullable(),
   watchingUntil: z.number().nullable(),
   lastSeenAt: z.number().nullable(),
 });
@@ -290,6 +294,12 @@ export default async function plugin(bb: BbPluginApi) {
       created_by TEXT NOT NULL,
       created_at INTEGER NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS thread_runtime (
+      thread_id TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
   ]);
 
   type ChannelRow = {
@@ -298,9 +308,13 @@ export default async function plugin(bb: BbPluginApi) {
     post_count: number; last_post_at: number | null;
   };
   type MemberRow = {
-    id: string; handle: string; kind: "agent" | "human"; provider_id: string | null;
+    id: string; handle: string; kind: "agent" | "human"; provider_id: string | null; model: string | null;
     thread_title: string | null; home_channel_id: string | null; created_at: number;
   };
+  const MEMBER_SELECT = `
+    SELECT m.id, m.handle, m.kind, COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
+           m.thread_title, m.home_channel_id, m.created_at
+    FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`;
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
     environment_id: string | null; thread_id: string | null; created_at: number;
@@ -322,7 +336,7 @@ export default async function plugin(bb: BbPluginApi) {
     postCount: row.post_count, lastPostAt: row.last_post_at,
   });
   const toMember = (row: MemberRow): Member => ({
-    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id,
+    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model,
     threadTitle: row.thread_title, homeChannelId: row.home_channel_id, createdAt: row.created_at,
   });
   const toPost = (row: PostRow): Post => ({
@@ -346,14 +360,14 @@ export default async function plugin(bb: BbPluginApi) {
     return toChannel(row);
   }
   function listMembers(): Member[] {
-    return (db.prepare(`SELECT * FROM members ORDER BY created_at`).all() as MemberRow[]).map(toMember);
+    return (db.prepare(`${MEMBER_SELECT} ORDER BY m.created_at`).all() as MemberRow[]).map(toMember);
   }
   function getMember(id: string): Member | null {
-    const row = db.prepare(`SELECT * FROM members WHERE id = ?`).get(id) as MemberRow | undefined;
+    const row = db.prepare(`${MEMBER_SELECT} WHERE m.id = ?`).get(id) as MemberRow | undefined;
     return row ? toMember(row) : null;
   }
   function getMemberByHandle(handle: string): Member | null {
-    const row = db.prepare(`SELECT * FROM members WHERE handle = ?`).get(handle) as MemberRow | undefined;
+    const row = db.prepare(`${MEMBER_SELECT} WHERE m.handle = ?`).get(handle) as MemberRow | undefined;
     return row ? toMember(row) : null;
   }
   function listPosts(channelId: string, opts: { limit?: number; afterId?: number } = {}): Post[] {
@@ -643,13 +657,14 @@ export default async function plugin(bb: BbPluginApi) {
     const now = Date.now();
     const rows = db.prepare(
       `SELECT m.id, m.handle, m.kind, m.thread_title,
+              COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
               (SELECT until FROM watches w WHERE w.member_id = m.id AND w.channel_id = ? AND w.until > ?) AS watching_until,
               (SELECT seen_at FROM member_reads r WHERE r.member_id = m.id AND r.channel_id = ?) AS seen_at
-       FROM members m`,
-    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; watching_until: number | null; seen_at: number | null }>;
+       FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`,
+    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
     return rows
       .filter((r) => r.watching_until !== null || (r.seen_at !== null && now - r.seen_at < ACTIVE_WINDOW_MS[r.kind]))
-      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
+      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
       .sort((a, b) => Number(b.watchingUntil !== null) - Number(a.watchingUntil !== null) || a.handle.localeCompare(b.handle));
   }
 
@@ -979,6 +994,10 @@ export default async function plugin(bb: BbPluginApi) {
   const BOARD_SKILLS = ["whatsagent"];
   bb.agents.configure((context) => {
     try {
+      db.prepare(
+        `INSERT INTO thread_runtime (thread_id, provider_id, model, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET provider_id = excluded.provider_id, model = excluded.model, updated_at = excluded.updated_at`,
+      ).run(context.thread.id, context.provider.id, context.provider.model, Date.now());
       const member = getMember(context.thread.id);
       const unread = member ? unreadCounts(member.id) : new Map<string, number>();
       const channels = listChannels().filter((c) => !c.archivedAt);
@@ -1158,7 +1177,7 @@ export default async function plugin(bb: BbPluginApi) {
           }
           case "members": {
             const members = listMembers();
-            return reply(members, members.map((m) => `@${m.handle}  ${m.kind === "human" ? "(human)" : `${m.id}${m.threadTitle ? ` — ${m.threadTitle}` : ""}`}`).join("\n"));
+            return reply(members, members.map((m) => `@${m.handle}  ${m.kind === "human" ? "(human)" : `${m.id} [${m.providerId ?? "?"}${m.model ? ` ${m.model}` : ""}]${m.threadTitle ? ` — ${m.threadTitle}` : ""}`}`).join("\n"));
           }
           case "archive":
           case "unarchive":
