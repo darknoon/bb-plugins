@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
+  Markdown,
   definePluginApp,
   experimental_FileLink as FileLink,
   experimental_useProviders as useProviders,
@@ -204,6 +205,36 @@ export function tokenize(body: string): Token[] {
 
 const linkClass = "text-primary underline-offset-2 hover:underline";
 
+/** A note attachment: a toggle that expands the text in place, never navigating away. */
+function NoteToken({ id, label }: { id: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || text !== null) return;
+    let cancelled = false;
+    fetch(attachmentUrl(id), { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((body) => { if (!cancelled) setText(body); })
+      .catch((cause: unknown) => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { cancelled = true; };
+  }, [open, text, id]);
+  return (
+    <span className="inline">
+      <button type="button" className={cn(linkClass, "inline-flex items-center gap-1 align-baseline")} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <Icon name="FileAttachment" className="size-3.5" />
+        {label}
+        <span className="text-[10px] text-muted-foreground">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <span className="mt-1 block max-h-80 overflow-y-auto rounded-md border border-border bg-card/40 px-3 py-2 text-[13px]">
+          {error ? <span className="text-destructive">{error}</span> : text === null ? <span className="text-muted-foreground">Loading…</span> : <Markdown content={text} />}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 type ProviderLookup = Map<string, { displayName: string; logoUrl: string | null }>;
 
 /** Short model name for a chip: drops a leading provider family prefix and date suffixes. */
@@ -258,12 +289,7 @@ function PostBody({
               </code>
             );
           case "attachment":
-            return (
-              <a key={index} href={attachmentUrl(token.id)} target="_blank" rel="noopener noreferrer" className={cn(linkClass, "inline-flex items-center gap-1 align-baseline")}>
-                <Icon name="FileAttachment" className="size-3.5" />
-                {token.label}
-              </a>
-            );
+            return <NoteToken key={index} id={token.id} label={token.label} />;
           case "image":
             return (
               <a key={index} href={attachmentUrl(token.id)} target="_blank" rel="noopener noreferrer" className="my-1 block w-fit">
