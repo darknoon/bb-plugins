@@ -18,7 +18,7 @@ import {
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SmileIcon } from "@hugeicons/core-free-icons";
-import type { Channel, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
+import type { Channel, HumanIdentity, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
 
 const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"];
 /** Shown directly in the hover toolbar, Slack-style; the smiley opens the full palette. */
@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 type Overview = {
+  me: Member;
   channels: Channel[];
   members: Member[];
   projects: Array<{ id: string; name: string }>;
@@ -43,19 +44,42 @@ type Overview = {
 // Data
 // ---------------------------------------------------------------------------
 
-function useOverview() {
+/**
+ * Who is at the keyboard, per the plugin's /whoami route. On the tailnet the
+ * Tailscale proxy names the user; elsewhere this resolves to null and the
+ * board uses its shared fallback human member.
+ */
+function useIdentity(): { identity: HumanIdentity; ready: boolean } {
+  const [state, setState] = useState<{ identity: HumanIdentity; ready: boolean }>({ identity: null, ready: false });
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v1/plugins/whatsagent/http/whoami", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { login?: string | null; name?: string | null; profilePic?: string | null } | null) => {
+        if (cancelled) return;
+        const identity: HumanIdentity = body?.login ? { login: body.login, name: body.name ?? null, profilePic: body.profilePic ?? null } : null;
+        setState({ identity, ready: true });
+      })
+      .catch(() => { if (!cancelled) setState({ identity: null, ready: true }); });
+    return () => { cancelled = true; };
+  }, []);
+  return state;
+}
+
+function useOverview(identity: HumanIdentity, ready: boolean) {
   const rpc = useRpc<typeof rpcContract>();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refetch = useCallback(() => {
-    rpc.call("wa_overview").then(
+    if (!ready) return;
+    rpc.call("wa_overview", { identity }).then(
       (result) => {
         setOverview(result);
         setError(null);
       },
       (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
     );
-  }, [rpc]);
+  }, [rpc, identity, ready]);
   useEffect(() => {
     refetch();
   }, [refetch]);
@@ -63,7 +87,7 @@ function useOverview() {
   return { rpc, overview, error, refetch };
 }
 
-function usePosts(rpc: Rpc, channelId: string | null) {
+function usePosts(rpc: Rpc, channelId: string | null, identity: HumanIdentity) {
   const [posts, setPosts] = useState<Post[]>([]);
   const refetch = useCallback(() => {
     if (!channelId) {
@@ -74,11 +98,11 @@ function usePosts(rpc: Rpc, channelId: string | null) {
       (result) => {
         setPosts(result.posts);
         const last = result.posts[result.posts.length - 1];
-        if (last) void rpc.call("wa_mark_read", { channelId, lastPostId: last.id }).catch(() => undefined);
+        if (last) void rpc.call("wa_mark_read", { channelId, lastPostId: last.id, identity }).catch(() => undefined);
       },
       (cause: unknown) => toast.error(cause instanceof Error ? cause.message : String(cause)),
     );
-  }, [rpc, channelId]);
+  }, [rpc, channelId, identity]);
   useEffect(() => {
     refetch();
   }, [refetch]);
@@ -90,7 +114,7 @@ function usePosts(rpc: Rpc, channelId: string | null) {
 }
 
 /** Who is watching or recently active; also heartbeats the human's presence while the channel is open. */
-function usePresence(rpc: Rpc, channelId: string | null) {
+function usePresence(rpc: Rpc, channelId: string | null, identity: HumanIdentity) {
   const [members, setMembers] = useState<Presence[]>([]);
   const refetch = useCallback(() => {
     if (!channelId) return;
@@ -101,11 +125,11 @@ function usePresence(rpc: Rpc, channelId: string | null) {
       setMembers([]);
       return;
     }
-    const beat = () => rpc.call("wa_seen", { channelId }).then(refetch, () => undefined);
+    const beat = () => rpc.call("wa_seen", { channelId, identity }).then(refetch, () => undefined);
     beat();
     const timer = setInterval(beat, 60_000);
     return () => clearInterval(timer);
-  }, [rpc, channelId, refetch]);
+  }, [rpc, channelId, refetch, identity]);
   useRealtime("board-changed", (payload) => {
     const reason = (payload as { reason?: string } | null)?.reason;
     if (reason === "watch" || reason === "post" || reason === "read") refetch();
@@ -327,6 +351,7 @@ function Avatar({
   handle,
   kind,
   avatarId,
+  avatarUrl,
   onClick,
   title,
   size = "size-8",
@@ -334,6 +359,7 @@ function Avatar({
   handle: string;
   kind: "agent" | "human";
   avatarId?: string | null;
+  avatarUrl?: string | null;
   onClick?: () => void;
   title?: string;
   size?: string;
@@ -344,8 +370,9 @@ function Avatar({
     size,
     onClick && "hover:ring-2 hover:ring-ring/40",
   );
-  const style = avatarId ? undefined : { backgroundColor: `hsl(${handleHue(handle)} ${kind === "human" ? "70%" : "45%"} 42%)` };
-  const content = avatarId ? <img src={attachmentUrl(avatarId)} alt="" className="size-full object-cover" /> : initials;
+  const src = avatarId ? attachmentUrl(avatarId) : avatarUrl ?? null;
+  const style = src ? undefined : { backgroundColor: `hsl(${handleHue(handle)} ${kind === "human" ? "70%" : "45%"} 42%)` };
+  const content = src ? <img src={src} alt="" className="size-full object-cover" referrerPolicy="no-referrer" /> : initials;
   return onClick ? (
     <button type="button" className={className} style={style} onClick={onClick} title={title} aria-label={kind === "agent" ? `Open ${handle}'s thread` : `${handle}: change avatar`}>
       {content}
@@ -558,7 +585,7 @@ function PresenceChip({ presence, providers }: { presence: Presence[]; providers
         {presence.map((p) => {
           const row = (
             <>
-              <Avatar handle={p.handle} kind={p.kind} avatarId={p.avatarId} size="size-5" />
+              <Avatar handle={p.handle} kind={p.kind} avatarId={p.avatarId} avatarUrl={p.avatarUrl} size="size-5" />
               <span className={cn("size-1.5 shrink-0 rounded-full", p.watchingUntil ? "bg-success" : "bg-muted-foreground/50")} aria-hidden="true" />
               <span className="font-medium">@{p.handle}</span>
               {p.kind === "human" ? <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">human</span> : <span className="min-w-0 flex-1"><ModelChip providerId={p.providerId} model={p.model} providers={providers} title={p.threadTitle ?? undefined} /></span>}
@@ -715,6 +742,7 @@ function PostList({
   channels,
   providers,
   humanHandle,
+  myId,
   onChannel,
   onDelete,
   onReact,
@@ -725,6 +753,7 @@ function PostList({
   channels: Channel[];
   providers: ProviderLookup;
   humanHandle: string;
+  myId: string;
   onChannel: (channel: Channel) => void;
   onDelete: (post: Post) => void;
   onReact: (post: Post, emoji: string) => void;
@@ -762,8 +791,9 @@ function PostList({
                   handle={group.handle}
                   kind={group.kind}
                   avatarId={member?.avatarId ?? null}
-                  title={group.kind === "human" ? "Change your avatar" : title}
-                  onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : group.kind === "human" ? onPickHumanAvatar : undefined}
+                  avatarUrl={member?.avatarUrl ?? null}
+                  title={group.memberId === myId ? "Change your avatar" : group.kind === "human" ? member?.threadTitle ?? group.handle : title}
+                  onClick={group.kind === "agent" && group.threadId ? () => navigate.toThread(group.threadId!) : group.memberId === myId ? onPickHumanAvatar : undefined}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 leading-tight">
@@ -961,7 +991,7 @@ function Composer({
         onSubmit={submit}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length > 0) { e.preventDefault(); void attach(Array.from(e.dataTransfer.files)); } }}
-        className={cn("flex items-center gap-2 rounded-lg border border-input bg-background px-3 py-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
+        className={cn("flex items-center gap-2 rounded-lg border border-input bg-transparent px-3 py-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
       >
         <input
           ref={inputRef}
@@ -1000,15 +1030,16 @@ function Composer({
 // ---------------------------------------------------------------------------
 
 function BoardPage({ subPath }: { subPath: string }) {
-  const { rpc, overview, error, refetch } = useOverview();
+  const { identity, ready } = useIdentity();
+  const { rpc, overview, error, refetch } = useOverview(identity, ready);
   const navigate = useBbNavigate();
   const channels = overview?.channels ?? [];
   const active = useMemo(() => {
     const wanted = subPath.replace(/^#/, "");
     return channels.find((c) => c.name === wanted) ?? channels.find((c) => c.name === "general") ?? channels[0] ?? null;
   }, [channels, subPath]);
-  const { posts, refetch: refetchPosts } = usePosts(rpc, active?.id ?? null);
-  const presence = usePresence(rpc, active?.id ?? null);
+  const { posts, refetch: refetchPosts } = usePosts(rpc, active?.id ?? null, identity);
+  const presence = usePresence(rpc, active?.id ?? null, identity);
   const providerRoster = useProviders();
   const avatarInput = useRef<HTMLInputElement | null>(null);
   const uploadFile = useCallback(
@@ -1048,7 +1079,7 @@ function BoardPage({ subPath }: { subPath: string }) {
           if (!file) return;
           try {
             const { id } = await uploadFile(file);
-            await rpc.call("wa_set_member_avatar", { memberId: "human", attachmentId: id });
+            await rpc.call("wa_set_member_avatar", { memberId: "me", attachmentId: id, identity });
             refetch();
           } catch (cause) {
             report(cause);
@@ -1062,7 +1093,7 @@ function BoardPage({ subPath }: { subPath: string }) {
         onSelect={select}
         onCreate={async (name) => {
           try {
-            const channel = await rpc.call("wa_create_channel", { name });
+            const channel = await rpc.call("wa_create_channel", { name, identity });
             refetch();
             select(channel);
           } catch (cause) {
@@ -1079,12 +1110,13 @@ function BoardPage({ subPath }: { subPath: string }) {
               members={overview.members}
               channels={channels}
               providers={providers}
-              humanHandle={overview.humanHandle}
+              humanHandle={overview.me.handle}
+              myId={overview.me.id}
               onChannel={select}
               onPickHumanAvatar={() => avatarInput.current?.click()}
               onReact={async (post, emoji) => {
                 try {
-                  await rpc.call("wa_react", { postId: post.id, emoji });
+                  await rpc.call("wa_react", { postId: post.id, emoji, identity });
                   refetchPosts();
                 } catch (cause) {
                   report(cause);
@@ -1107,7 +1139,7 @@ function BoardPage({ subPath }: { subPath: string }) {
               onUpload={async (file) => (await uploadFile(file)).ref}
               onSend={async (body) => {
                 try {
-                  await rpc.call("wa_post_human", { channelId: active.id, body });
+                  await rpc.call("wa_post_human", { channelId: active.id, body, identity });
                   refetchPosts();
                 } catch (cause) {
                   report(cause);

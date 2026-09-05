@@ -46,6 +46,8 @@ export const memberSchema = z.object({
   model: z.string().nullable(),
   /** Attachment id of a custom avatar; null means the default initials-on-color mark. */
   avatarId: z.string().nullable(),
+  /** External avatar (a tailnet user's profile picture) used when no attachment is set. */
+  avatarUrl: z.string().nullable(),
   threadTitle: z.string().nullable(),
   homeChannelId: z.string().nullable(),
   createdAt: z.number(),
@@ -72,12 +74,25 @@ export const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀
 
 const projectSummarySchema = z.object({ id: z.string(), name: z.string() });
 
+/**
+ * Who the page says is at the keyboard. Filled from the plugin's /whoami route,
+ * which reads the Tailscale-User-* headers Tailscale Serve adds on the tailnet.
+ * Absent (loopback, bb connect) means the shared fallback human member.
+ */
+export const humanIdentitySchema = z.object({
+  login: z.string().min(1).max(200),
+  name: z.string().max(200).nullable(),
+  profilePic: z.string().url().max(2000).nullable(),
+}).nullable();
+export type HumanIdentity = z.infer<typeof humanIdentitySchema>;
+
 export const presenceSchema = z.object({
   memberId: z.string(),
   handle: z.string(),
   kind: z.enum(["agent", "human"]),
   threadTitle: z.string().nullable(),
   avatarId: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   watchingUntil: z.number().nullable(),
@@ -87,8 +102,10 @@ export type Presence = z.infer<typeof presenceSchema>;
 
 export const rpcContract = defineRpcContract({
   wa_overview: {
-    input: z.null(),
+    input: z.object({ identity: humanIdentitySchema }),
     output: z.object({
+      /** The member this page acts as. */
+      me: memberSchema,
       channels: z.array(channelSchema),
       members: z.array(memberSchema),
       projects: z.array(projectSummarySchema),
@@ -99,7 +116,7 @@ export const rpcContract = defineRpcContract({
     }),
   },
   wa_mark_read: {
-    input: z.object({ channelId: z.string(), lastPostId: z.number().int() }),
+    input: z.object({ channelId: z.string(), lastPostId: z.number().int(), identity: humanIdentitySchema }),
     output: z.object({ ok: z.literal(true) }),
   },
   wa_posts: {
@@ -107,11 +124,11 @@ export const rpcContract = defineRpcContract({
     output: z.object({ posts: z.array(postSchema) }),
   },
   wa_post_human: {
-    input: z.object({ channelId: z.string(), body: z.string() }),
+    input: z.object({ channelId: z.string(), body: z.string(), identity: humanIdentitySchema }),
     output: postSchema,
   },
   wa_create_channel: {
-    input: z.object({ name: z.string(), topic: z.string().optional(), projectId: z.string().nullable().optional() }),
+    input: z.object({ name: z.string(), topic: z.string().optional(), projectId: z.string().nullable().optional(), identity: humanIdentitySchema }),
     output: channelSchema,
   },
   wa_update_channel: {
@@ -132,7 +149,7 @@ export const rpcContract = defineRpcContract({
     output: channelSchema,
   },
   wa_react: {
-    input: z.object({ postId: z.number().int(), emoji: z.string().min(1).max(16) }),
+    input: z.object({ postId: z.number().int(), emoji: z.string().min(1).max(16), identity: humanIdentitySchema }),
     output: postSchema,
   },
   wa_delete_post: {
@@ -148,7 +165,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ members: z.array(presenceSchema) }),
   },
   wa_seen: {
-    input: z.object({ channelId: z.string() }),
+    input: z.object({ channelId: z.string(), identity: humanIdentitySchema }),
     output: z.object({ ok: z.literal(true) }),
   },
   wa_upload: {
@@ -157,7 +174,7 @@ export const rpcContract = defineRpcContract({
   },
   /** Human-only: set (or clear with null) any member's avatar from an uploaded attachment. */
   wa_set_member_avatar: {
-    input: z.object({ memberId: z.string(), attachmentId: z.string().nullable() }),
+    input: z.object({ memberId: z.string(), attachmentId: z.string().nullable(), identity: humanIdentitySchema }),
     output: memberSchema,
   },
 });
@@ -235,7 +252,7 @@ export function slugify(input: string): string {
 // ---------------------------------------------------------------------------
 
 type Actor =
-  | { kind: "human" }
+  | { kind: "human"; memberId: string }
   | { kind: "agent"; threadId: string; projectId: string | null };
 
 export default async function plugin(bb: BbPluginApi) {
@@ -333,6 +350,8 @@ export default async function plugin(bb: BbPluginApi) {
     )`,
     `ALTER TABLE watches ADD COLUMN wake_on_reactions INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE members ADD COLUMN avatar_id TEXT`,
+    `ALTER TABLE members ADD COLUMN avatar_url TEXT`,
+    `ALTER TABLE members ADD COLUMN login TEXT`,
   ]);
 
   type ChannelRow = {
@@ -342,11 +361,11 @@ export default async function plugin(bb: BbPluginApi) {
   };
   type MemberRow = {
     id: string; handle: string; kind: "agent" | "human"; provider_id: string | null; model: string | null;
-    thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null;
+    thread_title: string | null; home_channel_id: string | null; created_at: number; avatar_id: string | null; avatar_url: string | null;
   };
   const MEMBER_SELECT = `
     SELECT m.id, m.handle, m.kind, COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
-           m.thread_title, m.home_channel_id, m.created_at, m.avatar_id
+           m.thread_title, m.home_channel_id, m.created_at, m.avatar_id, m.avatar_url
     FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`;
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
@@ -369,7 +388,7 @@ export default async function plugin(bb: BbPluginApi) {
     postCount: row.post_count, lastPostAt: row.last_post_at,
   });
   const toMember = (row: MemberRow): Member => ({
-    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model, avatarId: row.avatar_id,
+    id: row.id, handle: row.handle, kind: row.kind, providerId: row.provider_id, model: row.model, avatarId: row.avatar_id, avatarUrl: row.avatar_url,
     threadTitle: row.thread_title, homeChannelId: row.home_channel_id, createdAt: row.created_at,
   });
   const toPost = (row: PostRow): Post => ({
@@ -569,8 +588,41 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   function memberFor(actor: Actor, homeChannel: Channel | null): Promise<Member> {
-    if (actor.kind === "human") return Promise.resolve(getMember(HUMAN_MEMBER_ID)!);
+    if (actor.kind === "human") return Promise.resolve(getMember(actor.memberId) ?? getMember(HUMAN_MEMBER_ID)!);
     return ensureAgentMember(actor.threadId, homeChannel);
+  }
+
+  /**
+   * Resolve the page's identity to a human member. A tailnet login gets its
+   * own member (`human:<login>`) named after the first name; no identity means
+   * the shared fallback member, whose handle is the humanHandle setting.
+   */
+  type HumanActor = Extract<Actor, { kind: "human" }>;
+  function humanFor(identity: HumanIdentity | undefined): HumanActor {
+    if (!identity) return { kind: "human", memberId: HUMAN_MEMBER_ID };
+    const login = identity.login.toLowerCase();
+    const known = db.prepare(`SELECT id, avatar_url FROM members WHERE login = ?`).get(login) as { id: string; avatar_url: string | null } | undefined;
+    if (known) {
+      if (identity.profilePic && known.avatar_url !== identity.profilePic) db.prepare(`UPDATE members SET avatar_url = ? WHERE id = ?`).run(identity.profilePic, known.id);
+      return { kind: "human", memberId: known.id };
+    }
+    // The first identified person claims the shared fallback member, so the
+    // board's early history (posted before identity existed) stays theirs.
+    const fallbackUnclaimed = db.prepare(`SELECT 1 FROM members WHERE id = ? AND login IS NULL`).get(HUMAN_MEMBER_ID);
+    if (fallbackUnclaimed) {
+      db.prepare(`UPDATE members SET login = ?, thread_title = ?, avatar_url = COALESCE(?, avatar_url) WHERE id = ?`)
+        .run(login, identity.name, identity.profilePic, HUMAN_MEMBER_ID);
+      changed("member");
+      return { kind: "human", memberId: HUMAN_MEMBER_ID };
+    }
+    const id = `human:${login}`;
+    const first = (identity.name ?? "").trim().split(/\s+/)[0] ?? "";
+    const base = slugify(first) || slugify(login.split("@")[0] ?? "") || "human";
+    db.prepare(
+      `INSERT INTO members (id, handle, kind, login, thread_title, avatar_url, created_at) VALUES (?, ?, 'human', ?, ?, ?, ?)`,
+    ).run(id, uniqueHandle(base), login, identity.name, identity.profilePic, Date.now());
+    changed("member");
+    return { kind: "human", memberId: id };
   }
 
   function setHandle(memberId: string, raw: string): Member {
@@ -748,15 +800,15 @@ export default async function plugin(bb: BbPluginApi) {
   function presence(channelId: string): Presence[] {
     const now = Date.now();
     const rows = db.prepare(
-      `SELECT m.id, m.handle, m.kind, m.thread_title, m.avatar_id,
+      `SELECT m.id, m.handle, m.kind, m.thread_title, m.avatar_id, m.avatar_url,
               COALESCE(tr.provider_id, m.provider_id) AS provider_id, tr.model AS model,
               (SELECT until FROM watches w WHERE w.member_id = m.id AND w.channel_id = ? AND w.until > ?) AS watching_until,
               (SELECT seen_at FROM member_reads r WHERE r.member_id = m.id AND r.channel_id = ?) AS seen_at
        FROM members m LEFT JOIN thread_runtime tr ON tr.thread_id = m.id`,
-    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; avatar_id: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
+    ).all(channelId, now, channelId) as Array<{ id: string; handle: string; kind: "agent" | "human"; thread_title: string | null; avatar_id: string | null; avatar_url: string | null; provider_id: string | null; model: string | null; watching_until: number | null; seen_at: number | null }>;
     return rows
       .filter((r) => r.watching_until !== null || (r.seen_at !== null && now - r.seen_at < ACTIVE_WINDOW_MS[r.kind]))
-      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, avatarId: r.avatar_id, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
+      .map((r) => ({ memberId: r.id, handle: r.handle, kind: r.kind, threadTitle: r.thread_title, avatarId: r.avatar_id, avatarUrl: r.avatar_url, providerId: r.provider_id, model: r.model, watchingUntil: r.watching_until, lastSeenAt: r.seen_at || null }))
       .sort((a, b) => Number(b.watchingUntil !== null) - Number(a.watchingUntil !== null) || a.handle.localeCompare(b.handle));
   }
 
@@ -899,11 +951,26 @@ export default async function plugin(bb: BbPluginApi) {
     });
   });
 
+  // Identity probe: when bb is reached through Tailscale Serve, the proxy adds
+  // Tailscale-User-* headers naming the connecting tailnet user. This route
+  // echoes what actually arrives so the page (and we) can see whether identity
+  // is available on a given path (tailnet vs bb connect vs localhost).
+  bb.http.route("GET", "/whoami", (c) => {
+    const pick = (name: string) => c.req.header(name) ?? null;
+    return Response.json({
+      login: pick("tailscale-user-login"),
+      name: pick("tailscale-user-name"),
+      profilePic: pick("tailscale-user-profile-pic"),
+      forwardedFor: pick("x-forwarded-for"),
+      host: pick("host"),
+    });
+  });
+
   // -- RPC (the Whatsagent page; the caller is the human) --------------------------
 
-  const human: Actor = { kind: "human" };
   bb.rpc.register(rpcContract, {
-    wa_overview: async () => {
+    wa_overview: async ({ identity }) => {
+      const me = (await memberFor(humanFor(identity), null));
       const policy = await readPolicy();
       let projects: Array<{ id: string; name: string }> = [];
       try {
@@ -912,20 +979,23 @@ export default async function plugin(bb: BbPluginApi) {
       } catch (cause) {
         bb.log.warn(`projects.list failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
-      const unread = Object.fromEntries(unreadCounts(HUMAN_MEMBER_ID));
-      return { channels: listChannels(), members: listMembers(), projects, humanHandle: policy.humanHandle, maxPostChars: policy.maxPostChars, unread };
+      const unread = Object.fromEntries(unreadCounts(me.id));
+      return { me, channels: listChannels(), members: listMembers(), projects, humanHandle: me.handle, maxPostChars: policy.maxPostChars, unread };
     },
     wa_posts: ({ channelId, limit }) => {
       const channel = getChannelById(channelId);
       if (!channel) throw new BoardError(`No channel ${channelId}.`);
       return { posts: listPosts(channel.id, { limit: limit ?? 200 }) };
     },
-    wa_post_human: ({ channelId, body }) => createPost(human, resolveChannel(channelId), body, null),
-    wa_create_channel: ({ name, topic, projectId }) => createChannel(human, HUMAN_MEMBER_ID, name, topic ?? "", projectId ?? null),
+    wa_post_human: ({ channelId, body, identity }) => createPost(humanFor(identity), resolveChannel(channelId), body, null),
+    wa_create_channel: ({ name, topic, projectId, identity }) => {
+      const actor = humanFor(identity);
+      return createChannel(actor, actor.memberId, name, topic ?? "", projectId ?? null);
+    },
     wa_update_channel: ({ channelId, ...patch }) => updateChannel(resolveChannel(channelId), patch),
     wa_admin_channel: ({ channelId, action }) => adminChannel(resolveChannel(channelId), action),
     wa_set_posting: ({ channelId, posting }) => setPosting(resolveChannel(channelId), posting),
-    wa_react: ({ postId, emoji }) => toggleReaction(HUMAN_MEMBER_ID, postId, emoji),
+    wa_react: ({ postId, emoji, identity }) => toggleReaction(humanFor(identity).memberId, postId, emoji),
     wa_delete_post: ({ postId }) => {
       const result = db.prepare(`DELETE FROM posts WHERE id = ?`).run(postId);
       db.prepare(`DELETE FROM reactions WHERE post_id = ?`).run(postId);
@@ -934,20 +1004,20 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wa_set_member_handle: ({ memberId, handle }) => setHandle(memberId, handle),
     wa_presence: ({ channelId }) => ({ members: presence(channelId) }),
-    wa_mark_read: ({ channelId, lastPostId }) => {
-      markRead(HUMAN_MEMBER_ID, channelId, lastPostId);
+    wa_mark_read: ({ channelId, lastPostId, identity }) => {
+      markRead(humanFor(identity).memberId, channelId, lastPostId);
       changed("read", { channelId });
       return { ok: true as const };
     },
-    wa_seen: ({ channelId }) => {
-      markRead(HUMAN_MEMBER_ID, channelId, 0);
+    wa_seen: ({ channelId, identity }) => {
+      markRead(humanFor(identity).memberId, channelId, 0);
       return { ok: true as const };
     },
     wa_upload: ({ mime, base64 }) => {
       const id = storeAttachment(Buffer.from(base64, "base64"), mime, HUMAN_MEMBER_ID);
       return { id, ref: `att:${id}` };
     },
-    wa_set_member_avatar: ({ memberId, attachmentId }) => setAvatar(memberId, attachmentId),
+    wa_set_member_avatar: ({ memberId, attachmentId, identity }) => setAvatar(memberId === "me" ? humanFor(identity).memberId : memberId, attachmentId),
   });
 
   // -- mention provider: type #channel in any bb composer to attach recent posts --
@@ -1285,7 +1355,7 @@ export default async function plugin(bb: BbPluginApi) {
       const json = hasFlag(args, "--json");
       const [command, ...rest] = args;
       // No BB_THREAD_ID means a human shell; agents always run inside a thread.
-      const actor: Actor = ctx.threadId ? { kind: "agent", threadId: ctx.threadId, projectId: ctx.projectId ?? null } : human;
+      const actor: Actor = ctx.threadId ? { kind: "agent", threadId: ctx.threadId, projectId: ctx.projectId ?? null } : { kind: "human", memberId: HUMAN_MEMBER_ID };
       const reply = (value: unknown, text: string) => ({ exitCode: 0, stdout: json ? JSON.stringify(value) : text });
       const fail = (message: string) => ({ exitCode: 1, stderr: message });
       try {
