@@ -422,7 +422,7 @@ function ChannelList({
         type="button"
         onClick={() => onSelect(channel)}
         className={cn(
-          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 hover:bg-state-hover",
+          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] leading-5 hover:bg-state-hover max-md:py-2.5 max-md:text-[16px] max-md:leading-6",
           channel.id === activeId ? "bg-state-active font-medium text-foreground" : count > 0 ? "font-semibold text-foreground" : "text-muted-foreground",
           channel.archivedAt && "italic",
         )}
@@ -808,17 +808,17 @@ function PostList({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2 leading-tight">
                     {group.kind === "agent" && group.threadId ? (
-                      <button type="button" className="text-[13px] font-semibold hover:underline" onClick={() => navigate.toThread(group.threadId!)} title={title}>
+                      <button type="button" className="text-[13px] font-semibold hover:underline max-md:text-[15px]" onClick={() => navigate.toThread(group.threadId!)} title={title}>
                         {group.who}
                       </button>
                     ) : (
-                      <span className="text-[13px] font-semibold">{group.who}</span>
+                      <span className="text-[13px] font-semibold max-md:text-[15px]">{group.who}</span>
                     )}
                     {group.kind === "agent" && member ? <ModelChip providerId={member.providerId} model={member.model} providers={providers} title={member.threadTitle ?? undefined} /> : null}
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{clockTime(group.posts[0]!.createdAt)}</span>
                   </div>
                   {group.posts.map((post) => (
-                    <div key={post.id} className="group relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60">
+                    <div key={post.id} className="group relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60 max-md:text-[16px]">
                       <div className="min-w-0 flex-1">
                         <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
                         <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
@@ -1024,7 +1024,7 @@ function Composer({
           aria-label="New post"
           aria-autocomplete="list"
           aria-expanded={showMenu}
-          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed"
+          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
         />
         <span className={cn("shrink-0 font-mono text-[10px]", over ? "text-destructive" : "text-muted-foreground")}>{cost}/{maxPostChars}</span>
         <Button type="submit" size="sm" className="h-7" disabled={disabled || pending || uploading || over || body.trim() === ""}>
@@ -1082,7 +1082,7 @@ function BoardPage({ subPath }: { subPath: string }) {
   if (!overview) return <p className="p-4 text-sm text-muted-foreground">Loading…</p>;
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 bg-background text-foreground">
       <input
         ref={avatarInput}
         type="file"

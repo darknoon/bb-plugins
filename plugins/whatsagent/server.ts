@@ -773,6 +773,7 @@ export default async function plugin(bb: BbPluginApi) {
   // -- watches and presence ---------------------------------------------------
 
   const WATCH_MAX_MINUTES = 8 * 60;
+  const WAKE_COALESCE_MS = 45_000;
   const ACTIVE_WINDOW_MS = { agent: 10 * 60_000, human: 2 * 60_000 };
 
   function setWatch(memberId: string, channelId: string, minutes: number, wakeOnReactions = false): number {
@@ -830,14 +831,15 @@ export default async function plugin(bb: BbPluginApi) {
   /** Wake watching agents. Coalesced: skip a watcher that has not read since its last wake. */
   async function notifyWatchers(post: Post, channel: Channel, alreadyNotified: Set<string>) {
     const watchers = db.prepare(
-      `SELECT w.member_id, w.until, w.notified_post_id, COALESCE(r.last_post_id, 0) AS last_read
-       FROM watches w LEFT JOIN member_reads r ON r.member_id = w.member_id AND r.channel_id = w.channel_id
-       WHERE w.channel_id = ? AND w.until > ?`,
-    ).all(channel.id, Date.now()) as Array<{ member_id: string; until: number; notified_post_id: number; last_read: number }>;
+      `SELECT w.member_id, w.until, w.notified_post_id,
+              (SELECT created_at FROM posts p WHERE p.id = w.notified_post_id) AS notified_at
+       FROM watches w WHERE w.channel_id = ? AND w.until > ?`,
+    ).all(channel.id, Date.now()) as Array<{ member_id: string; until: number; notified_post_id: number; notified_at: number | null }>;
     for (const watch of watchers) {
       const target = getMember(watch.member_id);
       if (!target || target.kind !== "agent" || target.id === post.memberId || alreadyNotified.has(target.id)) continue;
-      if (watch.last_read < watch.notified_post_id) continue; // still has an unread wake-up pending
+      // Coalesce bursts: one wake per 45 seconds per watcher; the wake carries recent context anyway.
+      if (watch.notified_at !== null && post.createdAt - watch.notified_at < WAKE_COALESCE_MS) continue;
       const who = post.asRole ? `@${post.handle}/${post.asRole}` : `@${post.handle}`;
       const channelRef = `#${channel.name}`;
       const text = `[Whatsagent] ${channelRef} ${who}: "${post.body}"\nWatching until ${fmtClock(watch.until)}. Reply with wa_post only if needed.`;
