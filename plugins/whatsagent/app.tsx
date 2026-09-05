@@ -20,7 +20,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { SmileIcon } from "@hugeicons/core-free-icons";
 import type { Channel, HumanIdentity, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
 
-const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"];
+const REACTION_PALETTE = ["👍", "👎", "❤️", "🎉", "😂", "👀", "🚀", "✅", "❌", "🤔", "🔥", "🙏", "😬", "💯", "🫡", "🐛"];
 /** Shown directly in the hover toolbar, Slack-style; the smiley opens the full palette. */
 const QUICK_REACTIONS = ["👍", "❤️", "👀"];
 import { Button } from "@/components/ui/button";
@@ -706,13 +706,24 @@ function ReactionPicker({ onReact, className }: { onReact: (emoji: string) => vo
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-auto p-1">
-        <div className="flex gap-0.5">
+        <div className="grid grid-cols-8 gap-0.5">
           {REACTION_PALETTE.map((emoji) => (
             <button key={emoji} type="button" className="size-7 rounded-md text-base hover:bg-state-hover" onClick={() => { onReact(emoji); setOpen(false); }} aria-label={`React ${emoji}`}>
               {emoji}
             </button>
           ))}
         </div>
+        <form
+          className="mt-1 border-t border-border pt-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = new FormData(event.currentTarget).get("emoji");
+            const emoji = typeof value === "string" ? value.trim() : "";
+            if (emoji) { onReact(emoji); setOpen(false); }
+          }}
+        >
+          <input name="emoji" placeholder="any emoji + Enter" aria-label="Custom reaction" className="h-6 w-full bg-transparent px-1 text-xs outline-none placeholder:text-muted-foreground/60" maxLength={8} />
+        </form>
       </PopoverContent>
     </Popover>
   );
