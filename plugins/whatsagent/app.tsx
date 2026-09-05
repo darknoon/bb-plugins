@@ -17,6 +17,8 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { Channel, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
+
+const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"];
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -73,7 +75,7 @@ function usePosts(rpc: Rpc, channelId: string | null) {
   }, [refetch]);
   useRealtime("board-changed", (payload) => {
     const reason = (payload as { reason?: string } | null)?.reason;
-    if (reason === "post" || reason === "member" || reason === "settings") refetch();
+    if (reason === "post" || reason === "member" || reason === "settings" || reason === "reaction") refetch();
   });
   return { posts, refetch };
 }
@@ -177,7 +179,14 @@ function ModelChip({ providerId, model, providers, title }: { providerId: string
   const provider = providerId ? providers.get(providerId) : undefined;
   return (
     <span className="inline-flex h-4 shrink-0 items-center gap-1 rounded-full border border-border px-1.5 text-[10px] leading-none text-muted-foreground" title={title ?? `${provider?.displayName ?? providerId ?? ""} ${model ?? ""}`.trim()}>
-      {provider?.logoUrl ? <img src={provider.logoUrl} alt="" className="size-2.5 rounded-sm" /> : null}
+      {provider?.logoUrl ? (
+        // Masked so the mark takes the chip's text color in both themes instead of the logo's baked-in color.
+        <span
+          aria-hidden="true"
+          className="inline-block size-2.5 shrink-0 bg-current"
+          style={{ maskImage: `url(${provider.logoUrl})`, WebkitMaskImage: `url(${provider.logoUrl})`, maskSize: "contain", WebkitMaskSize: "contain", maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat", maskPosition: "center", WebkitMaskPosition: "center" }}
+        />
+      ) : null}
       <span className="max-w-32 truncate">{model ? shortModel(model) : provider?.displayName ?? providerId}</span>
     </span>
   );
@@ -588,6 +597,53 @@ function ChannelHeader({
   );
 }
 
+function Reactions({ post, humanHandle, onReact }: { post: Post; humanHandle: string; onReact: (emoji: string) => void }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-1">
+      {post.reactions.map((reaction) => {
+        const mine = reaction.handles.includes(humanHandle);
+        return (
+          <button
+            key={reaction.emoji}
+            type="button"
+            className={cn(
+              "inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-[11px] leading-none hover:bg-state-hover",
+              mine ? "border-primary/40 bg-primary/10 text-foreground" : "border-border text-muted-foreground",
+            )}
+            title={reaction.handles.map((h) => `@${h}`).join(", ")}
+            aria-pressed={mine}
+            onClick={() => onReact(reaction.emoji)}
+          >
+            <span>{reaction.emoji}</span>
+            {reaction.handles.length > 1 ? <span>{reaction.handles.length}</span> : null}
+          </button>
+        );
+      })}
+      <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn("inline-flex h-5 items-center rounded-full border border-dashed border-border px-1.5 text-[11px] leading-none text-muted-foreground hover:bg-state-hover hover:text-foreground", post.reactions.length === 0 && "invisible group-hover:visible")}
+            aria-label="Add reaction"
+          >
+            +
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-auto p-1">
+          <div className="flex gap-0.5">
+            {REACTION_PALETTE.map((emoji) => (
+              <button key={emoji} type="button" className="size-7 rounded-md text-base hover:bg-state-hover" onClick={() => { onReact(emoji); setPickerOpen(false); }} aria-label={`React ${emoji}`}>
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 type PostGroup = { key: string; memberId: string; handle: string; kind: "agent" | "human"; threadId: string | null; who: string; posts: Post[] };
 
 function groupPosts(posts: Post[]): Array<{ day: string; groups: PostGroup[] }> {
@@ -616,15 +672,19 @@ function PostList({
   members,
   channels,
   providers,
+  humanHandle,
   onChannel,
   onDelete,
+  onReact,
 }: {
   posts: Post[];
   members: Member[];
   channels: Channel[];
   providers: ProviderLookup;
+  humanHandle: string;
   onChannel: (channel: Channel) => void;
   onDelete: (post: Post) => void;
+  onReact: (post: Post, emoji: string) => void;
 }) {
   const navigate = useBbNavigate();
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -671,6 +731,7 @@ function PostList({
                     <div key={post.id} className="group -mx-2 flex items-start gap-2 rounded px-2 py-0.5 text-sm leading-relaxed hover:bg-state-hover/60">
                       <div className="min-w-0 flex-1">
                         <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
+                        <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
                       </div>
                       <span className="invisible shrink-0 pt-1 text-[10px] text-muted-foreground group-hover:visible">{clockTime(post.createdAt)}</span>
                       <button
@@ -933,7 +994,16 @@ function BoardPage({ subPath }: { subPath: string }) {
               members={overview.members}
               channels={channels}
               providers={providers}
+              humanHandle={overview.humanHandle}
               onChannel={select}
+              onReact={async (post, emoji) => {
+                try {
+                  await rpc.call("wa_react", { postId: post.id, emoji });
+                  refetchPosts();
+                } catch (cause) {
+                  report(cause);
+                }
+              }}
               onDelete={async (post) => {
                 try {
                   await rpc.call("wa_delete_post", { postId: post.id });

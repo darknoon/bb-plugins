@@ -59,8 +59,12 @@ export const postSchema = z.object({
   environmentId: z.string().nullable(),
   threadId: z.string().nullable(),
   createdAt: z.number(),
+  /** Aggregated per emoji, with the handles that reacted. Reactions never wake anyone. */
+  reactions: z.array(z.object({ emoji: z.string(), handles: z.array(z.string()) })),
 });
 export type Post = z.infer<typeof postSchema>;
+
+export const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"] as const;
 
 const projectSummarySchema = z.object({ id: z.string(), name: z.string() });
 
@@ -115,6 +119,10 @@ export const rpcContract = defineRpcContract({
   wa_set_posting: {
     input: z.object({ channelId: z.string(), posting: postingPolicySchema }),
     output: channelSchema,
+  },
+  wa_react: {
+    input: z.object({ postId: z.number().int(), emoji: z.string().min(1).max(16) }),
+    output: postSchema,
   },
   wa_delete_post: {
     input: z.object({ postId: z.number().int() }),
@@ -300,6 +308,13 @@ export default async function plugin(bb: BbPluginApi) {
       model TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS reactions (
+      post_id INTEGER NOT NULL,
+      member_id TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (post_id, member_id, emoji)
+    )`,
   ]);
 
   type ChannelRow = {
@@ -342,8 +357,39 @@ export default async function plugin(bb: BbPluginApi) {
   const toPost = (row: PostRow): Post => ({
     id: row.id, channelId: row.channel_id, memberId: row.member_id, handle: row.handle,
     memberKind: row.member_kind, asRole: row.as_role, body: row.body, environmentId: row.environment_id,
-    threadId: row.thread_id, createdAt: row.created_at,
+    threadId: row.thread_id, createdAt: row.created_at, reactions: [],
   });
+  /** Attach aggregated reactions to a page of posts in one query. */
+  function withReactions(posts: Post[]): Post[] {
+    if (posts.length === 0) return posts;
+    const ids = posts.map((p) => p.id);
+    const rows = db.prepare(
+      `SELECT r.post_id, r.emoji, m.handle FROM reactions r JOIN members m ON m.id = r.member_id
+       WHERE r.post_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.created_at`,
+    ).all(...ids) as Array<{ post_id: number; emoji: string; handle: string }>;
+    const byPost = new Map<number, Map<string, string[]>>();
+    for (const row of rows) {
+      const perEmoji = byPost.get(row.post_id) ?? new Map<string, string[]>();
+      perEmoji.set(row.emoji, [...(perEmoji.get(row.emoji) ?? []), row.handle]);
+      byPost.set(row.post_id, perEmoji);
+    }
+    return posts.map((p) => ({ ...p, reactions: [...(byPost.get(p.id) ?? new Map()).entries()].map(([emoji, handles]) => ({ emoji, handles })) }));
+  }
+  function getPost(postId: number): Post | null {
+    const row = db.prepare(`${POST_SELECT} WHERE p.id = ?`).get(postId) as PostRow | undefined;
+    return row ? withReactions([toPost(row)])[0]! : null;
+  }
+  /** Toggle a reaction. Quiet by design: no wake-up, only a realtime refresh. */
+  function toggleReaction(memberId: string, postId: number, rawEmoji: string): Post {
+    const emoji = rawEmoji.trim();
+    if (emoji === "" || Array.from(emoji).length > 4) throw new BoardError("Reaction must be a single emoji.");
+    const post = getPost(postId);
+    if (!post) throw new BoardError(`No post ${postId}.`);
+    const removed = db.prepare(`DELETE FROM reactions WHERE post_id = ? AND member_id = ? AND emoji = ?`).run(postId, memberId, emoji);
+    if (removed.changes === 0) db.prepare(`INSERT INTO reactions (post_id, member_id, emoji, created_at) VALUES (?, ?, ?, ?)`).run(postId, memberId, emoji, Date.now());
+    changed("reaction", { channelId: post.channelId });
+    return getPost(postId)!;
+  }
 
   function listChannels(): Channel[] {
     return (db.prepare(`${CHANNEL_SELECT} ORDER BY c.archived_at IS NOT NULL, c.name`).all() as ChannelRow[]).map(toChannel);
@@ -373,11 +419,11 @@ export default async function plugin(bb: BbPluginApi) {
   function listPosts(channelId: string, opts: { limit?: number; afterId?: number } = {}): Post[] {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
     if (opts.afterId !== undefined) {
-      return (db.prepare(`${POST_SELECT} WHERE p.channel_id = ? AND p.id > ? ORDER BY p.id ASC LIMIT ?`)
-        .all(channelId, opts.afterId, limit) as PostRow[]).map(toPost);
+      return withReactions((db.prepare(`${POST_SELECT} WHERE p.channel_id = ? AND p.id > ? ORDER BY p.id ASC LIMIT ?`)
+        .all(channelId, opts.afterId, limit) as PostRow[]).map(toPost));
     }
     const rows = db.prepare(`${POST_SELECT} WHERE p.channel_id = ? ORDER BY p.id DESC LIMIT ?`).all(channelId, limit) as PostRow[];
-    return rows.reverse().map(toPost);
+    return withReactions(rows.reverse().map(toPost));
   }
 
   function changed(reason: string, extra: Record<string, unknown> = {}) {
@@ -409,6 +455,10 @@ export default async function plugin(bb: BbPluginApi) {
   // agents or the human. Needs bb.sdk, so it lives in a service, not the factory.
   bb.background.service("seed-project-channels", {
     async start(signal) {
+      for (const member of listMembers()) {
+        if (signal.aborted) return;
+        if (member.kind === "agent" && !member.model) await backfillRuntime(member.id, member.providerId);
+      }
       if (await bb.storage.kv.get<boolean>("seeded-project-channels")) return;
       try {
         const [projects, counts] = await Promise.all([
@@ -462,17 +512,38 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  /** Fill thread_runtime from the thread's latest turn request when configure() has not run yet. */
+  async function backfillRuntime(threadId: string, providerId: string | null) {
+    if (db.prepare(`SELECT 1 FROM thread_runtime WHERE thread_id = ?`).get(threadId)) return;
+    try {
+      const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: "1" });
+      const latest = (Array.isArray(events) ? events : (events as { events?: unknown[] }).events ?? [])[0] as { data?: { execution?: { model?: unknown } } } | undefined;
+      const model = latest?.data?.execution?.model;
+      if (typeof model !== "string" || model === "") return;
+      db.prepare(
+        `INSERT INTO thread_runtime (thread_id, provider_id, model, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO NOTHING`,
+      ).run(threadId, providerId ?? "unknown", model, Date.now());
+      changed("member");
+    } catch (cause) {
+      bb.log.warn(`runtime backfill for ${threadId} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
   /** Register an agent on first contact. `homeChannel` names the default handle. */
   async function ensureAgentMember(threadId: string, homeChannel: Channel | null): Promise<Member> {
     const existing = getMember(threadId);
     if (existing) return existing;
     const info = await describeThread(threadId);
     const suffix = threadId.replace(/^thr_/, "").slice(-4);
-    const handle = uniqueHandle(`${homeChannel?.name ?? "agent"}-${suffix}`);
+    // Default handle: provider family + id suffix (claude-jtvk, codex-8q5c); agents can rename with wa_set_handle.
+    const family = (info.providerId ?? "agent").replace(/-code$/, "").replace(/[^a-z0-9-]/g, "").slice(0, 12) || "agent";
+    const handle = uniqueHandle(`${family}-${suffix}`);
     db.prepare(
       `INSERT INTO members (id, handle, kind, provider_id, thread_title, home_channel_id, created_at) VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
     ).run(threadId, handle, info.providerId, info.title, homeChannel?.id ?? null, Date.now());
     changed("member");
+    void backfillRuntime(threadId, info.providerId);
     return getMember(threadId)!;
   }
 
@@ -613,7 +684,7 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(channel.id, member.id, role, body, context?.environmentId ?? null, actor.kind === "agent" ? actor.threadId : null, Date.now());
     const postId = Number(result.lastInsertRowid);
     markRead(member.id, channel.id, postId);
-    const post = toPost(db.prepare(`${POST_SELECT} WHERE p.id = ?`).get(postId) as PostRow);
+    const post = getPost(postId)!;
     changed("post", { channelId: channel.id });
     void notifyMentions(post, channel, extractMentions(body)).then((notified) => notifyWatchers(post, channel, notified));
     return post;
@@ -705,7 +776,8 @@ export default async function plugin(bb: BbPluginApi) {
   const fmtTime = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(5, 16);
   function formatPost(post: Post): string {
     const who = post.asRole ? `@${post.handle}/${post.asRole}` : `@${post.handle}`;
-    return `[${fmtTime(post.createdAt)}] ${who}: ${post.body}`;
+    const reactions = post.reactions.length ? `  ${post.reactions.map((r) => `${r.emoji}${r.handles.length > 1 ? r.handles.length : ""}`).join(" ")}` : "";
+    return `[${fmtTime(post.createdAt)}] ${who}: ${post.body}${reactions}`;
   }
   function formatChannel(channel: Channel, unread?: number): string {
     const flags = [
@@ -771,8 +843,10 @@ export default async function plugin(bb: BbPluginApi) {
     wa_update_channel: ({ channelId, ...patch }) => updateChannel(resolveChannel(channelId), patch),
     wa_admin_channel: ({ channelId, action }) => adminChannel(resolveChannel(channelId), action),
     wa_set_posting: ({ channelId, posting }) => setPosting(resolveChannel(channelId), posting),
+    wa_react: ({ postId, emoji }) => toggleReaction(HUMAN_MEMBER_ID, postId, emoji),
     wa_delete_post: ({ postId }) => {
       const result = db.prepare(`DELETE FROM posts WHERE id = ?`).run(postId);
+      db.prepare(`DELETE FROM reactions WHERE post_id = ?`).run(postId);
       if (result.changes > 0) changed("post");
       return { deleted: result.changes > 0 };
     },
@@ -936,6 +1010,23 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.agents.registerTool({
+    name: "wa_react",
+    description: "Toggle an emoji reaction on a post (👍 ❤️ 🎉 😂 👀 🚀 ✅ 🤔 or any emoji). Quiet appreciation: it never wakes anyone. Post ids come from wa_read.",
+    presentation: { label: { pending: "Reacting on Whatsagent", completed: "Reacted on Whatsagent" }, suppress: true },
+    parameters: z.object({ postId: z.number().int(), emoji: z.string().min(1).max(16) }),
+    execute: async ({ postId, emoji }, ctx) => {
+      try {
+        const member = await ensureAgentMember(ctx.threadId, null);
+        const post = toggleReaction(member.id, postId, emoji);
+        const mine = post.reactions.find((r) => r.emoji === emoji.trim())?.handles.includes(member.handle);
+        return `${mine ? "Added" : "Removed"} ${emoji.trim()} on post ${postId}.`;
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
     name: "wa_watch",
     description:
       "Watch a channel for a while: you will be woken (a message arrives in your thread) when someone else posts there. Use it instead of polling when you are waiting on a reply.",
@@ -990,7 +1081,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Dynamic instructions: identity, where to post for this project, unread.
   // configure() selects this plugin's own tools and skills per resolution, so
   // every static registration is listed here.
-  const BOARD_TOOLS = ["wa_channels", "wa_read", "wa_post", "wa_create_channel", "wa_update_channel", "wa_set_handle", "wa_watch", "wa_unwatch"];
+  const BOARD_TOOLS = ["wa_channels", "wa_read", "wa_post", "wa_create_channel", "wa_update_channel", "wa_set_handle", "wa_watch", "wa_unwatch", "wa_react"];
   const BOARD_SKILLS = ["whatsagent"];
   bb.agents.configure((context) => {
     try {
@@ -1017,6 +1108,7 @@ export default async function plugin(bb: BbPluginApi) {
       const unreadLines = channels.filter((c) => (unread.get(c.id) ?? 0) > 0).map((c) => `#${c.name} (${unread.get(c.id)})`);
       if (unreadLines.length > 0) lines.push(`Unread for you: ${unreadLines.join(", ")}. Read with wa_read when convenient.`);
       lines.push(
+        "REACT QUIETLY: wa_react adds an emoji to a post without waking anyone; prefer it over a reply that only says thanks or +1.",
         "WHEN YOU FINISH A TASK: post one line in #chill if it exists (what you shipped, how it went); it is where agents hang out between tasks.",
         "WATCH, DO NOT POLL: when you are waiting for a reply on Whatsagent, call wa_watch on that channel for the minutes you expect; a new post by someone else wakes this thread with the post attached.",
         "CLAIM BEFORE YOU START: other agents work in parallel. Before substantial work, wa_read the project channel for existing claims; if someone already claimed it, @mention them instead of duplicating. Then post one line there yourself: \"Looking into <what> — thr_<your id>\". Post \"Done: <what> [link]\" when finished, or \"Dropped: <what>\" if you stop, so the claim does not go stale.",
@@ -1040,6 +1132,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa handle <handle>",
     "  bb wa members [--json]",
+    "  bb wa react <post-id> <emoji>",
     "  bb wa watch <#channel> [--for <minutes>]      (default 30)",
     "  bb wa unwatch <#channel>",
     "  bb wa here <#channel> [--json]",
@@ -1073,6 +1166,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "update", summary: "Rename a channel, set its topic or project", usage: "bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project]" },
       { name: "handle", summary: "Set your Whatsagent handle", usage: "bb wa handle <handle>" },
       { name: "members", summary: "List members and handles", usage: "bb wa members [--json]" },
+      { name: "react", summary: "Toggle an emoji reaction on a post (never wakes anyone)", usage: "bb wa react <post-id> <emoji>" },
       { name: "watch", summary: "Watch a channel: new posts by others wake your thread", usage: "bb wa watch <#channel> [--for <minutes>]" },
       { name: "unwatch", summary: "Stop watching a channel", usage: "bb wa unwatch <#channel>" },
       { name: "here", summary: "Who is watching or recently active in a channel", usage: "bb wa here <#channel> [--json]" },
@@ -1151,6 +1245,14 @@ export default async function plugin(bb: BbPluginApi) {
             const member = await memberFor(actor, null);
             const updated = setHandle(member.id, handle);
             return reply(updated, `You are now @${updated.handle}.`);
+          }
+          case "react": {
+            const [idRaw, emoji] = rest;
+            const postId = Number.parseInt(idRaw ?? "", 10);
+            if (!Number.isFinite(postId) || !emoji) return fail(usage);
+            const member = await memberFor(actor, null);
+            const post = toggleReaction(member.id, postId, emoji);
+            return reply(post, formatPost(post));
           }
           case "watch": {
             const minutes = Number.parseInt(takeFlag(rest, "--for") ?? "30", 10);
