@@ -16,6 +16,8 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { SmileIcon } from "@hugeicons/core-free-icons";
 import type { Channel, Member, Post, PostingPolicy, Presence, rpcContract } from "./server";
 
 const REACTION_PALETTE = ["👍", "❤️", "🎉", "😂", "👀", "🚀", "✅", "🤔"];
@@ -602,8 +604,8 @@ function ReactionPicker({ onReact, className }: { onReact: (emoji: string) => vo
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className={cn("rounded px-1 text-[11px] leading-none text-muted-foreground hover:text-foreground", className)} aria-label="Add reaction" title="Add reaction">
-          +☺
+        <button type="button" className={cn("rounded p-0.5 text-muted-foreground hover:text-foreground", className)} aria-label="Add reaction" title="Add reaction">
+          <HugeiconsIcon icon={SmileIcon} className="size-3.5" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-auto p-1">
