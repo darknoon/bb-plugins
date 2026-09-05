@@ -989,6 +989,7 @@ function Composer({
   }, [channel.id]);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const disabled = !!channel.archivedAt;
 
   const trigger = useMemo(() => activeTrigger(body, caret), [body, caret]);
@@ -1100,8 +1101,20 @@ function Composer({
         onSubmit={submit}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length > 0) { e.preventDefault(); void attach(Array.from(e.dataTransfer.files)); } }}
-        className={cn("flex items-center gap-2 rounded-lg border border-input bg-transparent px-3 py-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
+        className={cn("flex items-center gap-1.5 rounded-xl border border-input bg-transparent p-1.5 focus-within:ring-1 focus-within:ring-ring", over && "border-destructive")}
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,text/plain,text/markdown,.md,.txt"
+          multiple
+          className="hidden"
+          aria-hidden="true"
+          onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void attach(files); }}
+        />
+        <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 rounded-md text-muted-foreground hover:text-foreground" onClick={() => fileInputRef.current?.click()} disabled={disabled || uploading} aria-label="Attach an image or text file">
+          <Icon name="Plus" className="size-4" />
+        </Button>
         <input
           ref={inputRef}
           value={body}
@@ -1123,7 +1136,7 @@ function Composer({
           aria-label="New post"
           aria-autocomplete="list"
           aria-expanded={showMenu}
-          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
+          className="h-7 min-w-0 flex-1 bg-transparent px-1 text-sm leading-7 outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed max-md:h-9 max-md:text-[16px]"
         />
         {over ? (
           <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={attachAsNote} disabled={uploading} aria-label="Move this text into a note file and link it">
@@ -1135,8 +1148,8 @@ function Composer({
             {maxPostChars - cost}
           </span>
         ) : null}
-        <Button type="submit" size="sm" className="h-7" disabled={disabled || pending || uploading || over || body.trim() === ""}>
-          Post
+        <Button type="submit" size="icon" className="size-7 shrink-0 rounded-md" disabled={disabled || pending || uploading || over || body.trim() === ""} aria-label="Post">
+          <Icon name="Sent" className="size-4" />
         </Button>
       </form>
     </div>
