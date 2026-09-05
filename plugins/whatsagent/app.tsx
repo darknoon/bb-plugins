@@ -28,6 +28,7 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 type Overview = {
@@ -386,12 +387,14 @@ function ChannelList({
   channels,
   activeId,
   unread,
+  fullWidth = false,
   onSelect,
   onCreate,
 }: {
   channels: Channel[];
   activeId: string | null;
   unread: Record<string, number>;
+  fullWidth?: boolean;
   onSelect: (channel: Channel) => void;
   onCreate: (name: string) => Promise<void>;
 }) {
@@ -433,7 +436,7 @@ function ChannelList({
     );
   };
   return (
-    <nav className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-card/40">
+    <nav className={cn("flex h-full shrink-0 flex-col bg-card/40", fullWidth ? "w-full" : "w-56 border-r border-border")}>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-2">
         <div className="space-y-px">{live.map(row)}</div>
         {creating ? (
@@ -611,6 +614,7 @@ function ChannelHeader({
   providers,
   rpc,
   refetch,
+  onBack,
 }: {
   channel: Channel;
   projects: Array<{ id: string; name: string }>;
@@ -618,6 +622,7 @@ function ChannelHeader({
   providers: ProviderLookup;
   rpc: Rpc;
   refetch: () => void;
+  onBack?: () => void;
 }) {
   const [editing, setEditing] = useState<null | { name: string; topic: string }>(null);
   const badge = (text: string) => <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">{text}</span>;
@@ -646,8 +651,13 @@ function ChannelHeader({
   }
 
   return (
-    <header className="flex items-center justify-between gap-4 border-b border-border px-5 py-2.5">
-      <div className="min-w-0">
+    <header className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5 md:px-5">
+      {onBack ? (
+        <Button variant="ghost" size="icon" className="size-8 shrink-0" aria-label="Back to channels" onClick={onBack}>
+          <span className="text-lg leading-none">‹</span>
+        </Button>
+      ) : null}
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h2 className="truncate text-[15px] font-semibold leading-tight">#{channel.name}</h2>
           {channel.lockedAt ? badge("locked") : null}
@@ -774,7 +784,7 @@ function PostList({
     );
   }
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-5">
       {days.map(({ day, groups }) => (
         <div key={day}>
           <div className="my-3 flex items-center gap-3 text-[11px] text-muted-foreground">
@@ -967,7 +977,7 @@ function Composer({
   const cost = Array.from(body.replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1")).length;
   const over = cost > maxPostChars;
   return (
-    <div className="relative border-t border-border px-5 pb-3 pt-2">
+    <div className="relative border-t border-border px-3 pb-3 pt-2 md:px-5">
       {showMenu ? (
         <ul role="listbox" className="absolute bottom-full left-5 z-10 mb-1 w-80 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
           {suggestions.map((suggestion, index) => (
@@ -1014,7 +1024,7 @@ function Composer({
           aria-label="New post"
           aria-autocomplete="list"
           aria-expanded={showMenu}
-          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed"
         />
         <span className={cn("shrink-0 font-mono text-[10px]", over ? "text-destructive" : "text-muted-foreground")}>{cost}/{maxPostChars}</span>
         <Button type="submit" size="sm" className="h-7" disabled={disabled || pending || uploading || over || body.trim() === ""}>
@@ -1030,14 +1040,20 @@ function Composer({
 // ---------------------------------------------------------------------------
 
 function BoardPage({ subPath }: { subPath: string }) {
+  const compact = useIsCompactViewport();
   const { identity, ready } = useIdentity();
   const { rpc, overview, error, refetch } = useOverview(identity, ready);
   const navigate = useBbNavigate();
   const channels = overview?.channels ?? [];
+  const wanted = subPath.replace(/^#/, "");
   const active = useMemo(() => {
-    const wanted = subPath.replace(/^#/, "");
-    return channels.find((c) => c.name === wanted) ?? channels.find((c) => c.name === "general") ?? channels[0] ?? null;
-  }, [channels, subPath]);
+    const explicit = channels.find((c) => c.name === wanted) ?? null;
+    // Compact viewports show the list until a channel is chosen; wide ones default to #general.
+    if (compact) return explicit;
+    return explicit ?? channels.find((c) => c.name === "general") ?? channels[0] ?? null;
+  }, [channels, wanted, compact]);
+  const showList = !compact || active === null;
+  const showChannel = !compact || active !== null;
   const { posts, refetch: refetchPosts } = usePosts(rpc, active?.id ?? null, identity);
   const presence = usePresence(rpc, active?.id ?? null, identity);
   const providerRoster = useProviders();
@@ -1086,10 +1102,12 @@ function BoardPage({ subPath }: { subPath: string }) {
           }
         }}
       />
+      {showList ? (
       <ChannelList
         channels={channels}
         activeId={active?.id ?? null}
         unread={overview.unread}
+        fullWidth={compact}
         onSelect={select}
         onCreate={async (name) => {
           try {
@@ -1101,10 +1119,20 @@ function BoardPage({ subPath }: { subPath: string }) {
           }
         }}
       />
+      ) : null}
+      {showChannel ? (
       <section className="flex min-w-0 flex-1 flex-col">
         {active ? (
           <>
-            <ChannelHeader channel={active} projects={overview.projects} presence={presence} providers={providers} rpc={rpc} refetch={refetch} />
+            <ChannelHeader
+              channel={active}
+              projects={overview.projects}
+              presence={presence}
+              providers={providers}
+              rpc={rpc}
+              refetch={refetch}
+              onBack={compact ? () => navigate.toPluginPanel("whatsagent", { subPath: "" }) : undefined}
+            />
             <PostList
               posts={posts}
               members={overview.members}
@@ -1152,6 +1180,7 @@ function BoardPage({ subPath }: { subPath: string }) {
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">Create a channel to start.</div>
         )}
       </section>
+      ) : null}
     </div>
   );
 }
