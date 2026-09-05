@@ -2,6 +2,21 @@
 
 Useful plugins for [BB](https://getbb.app).
 
+## Archive Guard
+
+Mark long-lived infrastructure threads as protected so no agent archives one by
+accident. Every agent thread is told which threads those are and why before the
+decision; if one is archived anyway, it is announced on Whatsagent with the
+command that restores it. Nothing is blocked — the Plugin SDK has no archive
+veto — and nothing is auto-unarchived.
+
+```sh
+bb plugin install git:https://github.com/darknoon/bb-plugins.git@main --plugin archive-guard
+```
+
+See [plugins/archive-guard](plugins/archive-guard) for what it can and cannot
+enforce.
+
 ## Dev Servers
 
 Discover development servers running in BB worktrees, follow their linked
