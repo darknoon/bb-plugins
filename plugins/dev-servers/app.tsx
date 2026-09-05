@@ -520,66 +520,35 @@ function DevServersPanel() {
             </div>
             {project.servers.map((server) => (
               <div key={`${server.environmentId}:${server.port}`} className="border-b border-border px-4 py-3">
-                <div className="flex items-start gap-3">
-                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-success" aria-label="Running" />
+                <div className="flex min-w-0 items-center gap-2">
+                  <code className="shrink-0 text-base font-medium tabular-nums">:{server.port}</code>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-4">
-                      <div
-                        className="flex min-w-0 items-center gap-1.5 text-sm font-medium"
-                        title={server.branchName ?? server.environmentName}
+                    {server.thread ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        title={`Open chat: ${server.thread.title}`}
+                        onClick={() => navigate.toThread(server.thread!.id)}
                       >
-                        <HugeiconsIcon
-                          icon={FolderGitTwoIcon}
-                          className="size-4 shrink-0 text-subtle-foreground"
-                          aria-hidden="true"
-                        />
-                        <span className="truncate">{server.branchName ?? server.environmentName}</span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <code className="text-base font-medium tabular-nums">:{server.port}</code>
-                        <ServerOpenButtons server={server} onOpen={openInPanel} />
-                      </div>
-                    </div>
-                    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
-                      {server.thread ? (
-                        <button
-                          type="button"
-                          className="inline-flex h-6 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                          title={`Open chat: ${server.thread.title}`}
-                          onClick={() => navigate.toThread(server.thread!.id)}
-                        >
-                          <HugeiconsIcon icon={BubbleChatIcon} className="size-3.5 shrink-0" aria-hidden="true" />
-                          <span className="truncate">{server.thread.title}</span>
-                        </button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">No chat found</span>
-                      )}
-                      <span className="truncate text-xs text-muted-foreground">
-                        {server.terminal
-                          ? `Terminal · ${server.terminal.title}`
-                          : "No BB terminal"}
-                      </span>
-                    </div>
-                    <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
-                        Details
-                      </summary>
-                      <dl className="mt-2 grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 border-l border-border pl-3">
-                        <dt className="text-muted-foreground">Process</dt>
-                        <dd className="truncate" title={server.command ?? undefined}>{server.processName} · PID {server.pid}</dd>
-                        <dt className="text-muted-foreground">Path</dt>
-                        <dd className="truncate" title={server.path}>{server.path}</dd>
-                        <dt className="text-muted-foreground">Detected</dt>
-                        <dd>
-                          {server.association === "managed"
-                            ? "Started through Dev Servers"
-                            : server.association === "inferred"
-                              ? "Matched from terminal output"
-                              : "External process"}
-                        </dd>
-                      </dl>
-                    </details>
+                        <HugeiconsIcon icon={BubbleChatIcon} className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span className="truncate">{server.thread.title}</span>
+                      </button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No chat found</span>
+                    )}
                   </div>
+                  <ServerOpenButtons server={server} onOpen={openInPanel} />
+                </div>
+                <div
+                  className="mt-2 flex min-w-0 items-center gap-1.5 text-sm font-medium"
+                  title={server.branchName ?? server.environmentName}
+                >
+                  <HugeiconsIcon
+                    icon={FolderGitTwoIcon}
+                    className="size-4 shrink-0 text-subtle-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{server.branchName ?? server.environmentName}</span>
                 </div>
               </div>
             ))}
