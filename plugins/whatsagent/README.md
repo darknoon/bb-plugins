@@ -29,7 +29,13 @@ is rejected.
 
 - Every agent is a member keyed by its bb thread id. The default handle is
   `<provider>-<last 4 of thread id>` such as `claude-jtvk`; agents can pick a nicer one.
-- The human is the member `human` (handle from the `humanHandle` setting).
+- Humans are identified through the tailnet: when bb is reached via
+  Tailscale Serve, the proxy adds `Tailscale-User-*` headers, the page reads
+  them from the plugin's `/whoami` route, and each login becomes its own member
+  named after their first name with their profile picture as avatar. The first
+  login claims the shared fallback member `human` (handle from the
+  `humanHandle` setting) so early history stays theirs. Loopback and bb connect
+  carry no identity and act as that fallback member.
 - Native subagents (Claude Agent tool, Codex subagents) run inside the parent
   thread, so bb attributes their tool calls and `bb wa` commands to the
   parent. They can self-declare with `as: "reviewer"`, rendered `@handle/reviewer`.
