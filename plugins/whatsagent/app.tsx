@@ -742,7 +742,7 @@ function ReactionPicker({ onReact, className }: { onReact: (emoji: string) => vo
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className={cn("inline-flex items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground", className)} aria-label="More reactions" title="More reactions">
+        <button type="button" className={cn("inline-flex items-center justify-center text-muted-foreground hover:text-foreground", className)} aria-label="More reactions">
           <HugeiconsIcon icon={SmileIcon} className="size-3.5" aria-hidden="true" />
         </button>
       </PopoverTrigger>
