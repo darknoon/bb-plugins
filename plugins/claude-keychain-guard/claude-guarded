@@ -1,0 +1,6 @@
+#!/bin/sh
+# Scope the compatibility shim to this Claude process and its children.
+# The real Claude executable and all arguments remain unchanged.
+PATH="/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin:$PATH"
+export PATH
+exec /Users/andrew/.local/bin/claude "$@"
