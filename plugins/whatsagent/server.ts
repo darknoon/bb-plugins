@@ -108,6 +108,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       /** The member this page acts as. */
       me: memberSchema,
+      /** Whether this page may use admin controls (archive, lock, posting policy, delete, manage members). */
+      isAdmin: z.boolean(),
       channels: z.array(channelSchema),
       members: z.array(memberSchema),
       projects: z.array(projectSummarySchema),
@@ -143,11 +145,11 @@ export const rpcContract = defineRpcContract({
     output: channelSchema,
   },
   wa_admin_channel: {
-    input: z.object({ channelId: z.string(), action: z.enum(["archive", "unarchive", "lock", "unlock"]) }),
+    input: z.object({ channelId: z.string(), action: z.enum(["archive", "unarchive", "lock", "unlock"]), identity: humanIdentitySchema }),
     output: channelSchema,
   },
   wa_set_posting: {
-    input: z.object({ channelId: z.string(), posting: postingPolicySchema }),
+    input: z.object({ channelId: z.string(), posting: postingPolicySchema, identity: humanIdentitySchema }),
     output: channelSchema,
   },
   wa_react: {
@@ -155,11 +157,11 @@ export const rpcContract = defineRpcContract({
     output: postSchema,
   },
   wa_delete_post: {
-    input: z.object({ postId: z.number().int() }),
+    input: z.object({ postId: z.number().int(), identity: humanIdentitySchema }),
     output: z.object({ deleted: z.boolean() }),
   },
   wa_set_member_handle: {
-    input: z.object({ memberId: z.string(), handle: z.string() }),
+    input: z.object({ memberId: z.string(), handle: z.string(), identity: humanIdentitySchema }),
     output: memberSchema,
   },
   wa_presence: {
@@ -173,7 +175,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.boolean() }),
   },
   wa_admin_unwatch: {
-    input: z.object({ memberId: z.string(), channelId: z.string() }),
+    input: z.object({ memberId: z.string(), channelId: z.string(), identity: humanIdentitySchema }),
     output: z.object({ cleared: z.boolean() }),
   },
   wa_seen: {
@@ -280,6 +282,11 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Handle shown for the human's posts",
       default: "human",
+    },
+    adminLogins: {
+      type: "string",
+      label: "Tailnet logins allowed to archive, lock, set posting policy, delete posts, and manage members (comma-separated). The login that first claimed the board is always an admin.",
+      default: "",
     },
   });
 
@@ -644,6 +651,23 @@ export default async function plugin(bb: BbPluginApi) {
    * the shared fallback member, whose handle is the humanHandle setting.
    */
   type HumanActor = Extract<Actor, { kind: "human" }>;
+  /**
+   * Admin = the board owner. No identity (desktop app on loopback, or bb connect,
+   * both of which are the owner's own sessions) counts as owner; an identified
+   * tailnet login must be the one that claimed the board or be listed in adminLogins.
+   */
+  async function isAdmin(identity: HumanIdentity | undefined): Promise<boolean> {
+    if (!identity) return true;
+    const login = identity.login.toLowerCase();
+    const owner = db.prepare(`SELECT login FROM members WHERE id = ?`).get(HUMAN_MEMBER_ID) as { login: string | null } | undefined;
+    if (owner?.login && owner.login === login) return true;
+    const { adminLogins } = await settings.get();
+    return adminLogins.split(",").map((v) => v.trim().toLowerCase()).filter(Boolean).includes(login);
+  }
+  async function assertAdmin(identity: HumanIdentity | undefined) {
+    if (!(await isAdmin(identity))) throw new BoardError("Only the board admin can do that.");
+  }
+
   function humanFor(identity: HumanIdentity | undefined): HumanActor {
     if (!identity) return { kind: "human", memberId: HUMAN_MEMBER_ID };
     const login = identity.login.toLowerCase();
@@ -1086,7 +1110,7 @@ export default async function plugin(bb: BbPluginApi) {
         bb.log.warn(`projects.list failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
       const unread = Object.fromEntries(unreadCounts(me.id));
-      return { me, channels: listChannels(), members: listMembers(), projects, humanHandle: me.handle, maxPostChars: policy.maxPostChars, unread };
+      return { me, isAdmin: await isAdmin(identity), channels: listChannels(), members: listMembers(), projects, humanHandle: me.handle, maxPostChars: policy.maxPostChars, unread };
     },
     wa_posts: ({ channelId, limit }) => {
       const channel = getChannelById(channelId);
@@ -1103,18 +1127,32 @@ export default async function plugin(bb: BbPluginApi) {
       return createChannel(actor, actor.memberId, name, topic ?? "", projectId ?? null);
     },
     wa_update_channel: ({ channelId, ...patch }) => updateChannel(resolveChannel(channelId), patch),
-    wa_admin_channel: ({ channelId, action }) => adminChannel(resolveChannel(channelId), action),
-    wa_set_posting: ({ channelId, posting }) => setPosting(resolveChannel(channelId), posting),
+    wa_admin_channel: async ({ channelId, action, identity }) => {
+      await assertAdmin(identity);
+      return adminChannel(resolveChannel(channelId), action);
+    },
+    wa_set_posting: async ({ channelId, posting, identity }) => {
+      await assertAdmin(identity);
+      return setPosting(resolveChannel(channelId), posting);
+    },
     wa_react: ({ postId, emoji, identity }) => toggleReaction(humanFor(identity).memberId, postId, emoji),
-    wa_delete_post: ({ postId }) => {
+    wa_delete_post: async ({ postId, identity }) => {
+      const own = getPost(postId)?.memberId === humanFor(identity).memberId;
+      if (!own) await assertAdmin(identity);
       const result = db.prepare(`DELETE FROM posts WHERE id = ?`).run(postId);
       db.prepare(`DELETE FROM reactions WHERE post_id = ?`).run(postId);
       if (result.changes > 0) changed("post");
       return { deleted: result.changes > 0 };
     },
-    wa_set_member_handle: ({ memberId, handle }) => setHandle(memberId, handle),
+    wa_set_member_handle: async ({ memberId, handle, identity }) => {
+      if (memberId !== humanFor(identity).memberId) await assertAdmin(identity);
+      return setHandle(memberId, handle);
+    },
     wa_presence: ({ channelId }) => ({ members: presence(channelId) }),
-    wa_admin_unwatch: ({ memberId, channelId }) => ({ cleared: clearWatch(memberId, channelId) }),
+    wa_admin_unwatch: async ({ memberId, channelId, identity }) => {
+      await assertAdmin(identity);
+      return { cleared: clearWatch(memberId, channelId) };
+    },
     wa_open_file: async ({ threadId, path, line }) => {
       try {
         await bb.sdk.threads.open({ threadId, file: { source: "workspace", path, lineNumber: line } });
@@ -1137,7 +1175,10 @@ export default async function plugin(bb: BbPluginApi) {
       const id = storeAttachment(Buffer.from(base64, "base64"), mime, HUMAN_MEMBER_ID);
       return { id, ref: `att:${id}` };
     },
-    wa_set_member_avatar: ({ memberId, attachmentId, identity }) => setAvatar(memberId === "me" ? humanFor(identity).memberId : memberId, attachmentId),
+    wa_set_member_avatar: async ({ memberId, attachmentId, identity }) => {
+      if (memberId !== "me") await assertAdmin(identity);
+      return setAvatar(memberId === "me" ? humanFor(identity).memberId : memberId, attachmentId);
+    },
   });
 
   // -- mention provider: type #channel in any bb composer to attach recent posts --
@@ -1422,6 +1463,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb wa channels [--all] [--json]",
     "  bb wa read <#channel> [--limit N] [--after <post-id>] [--json]",
     "  bb wa post <#channel> <body...> [--as <role>] [--json]",
+    "  (no BB_THREAD_ID: posts as @cli, or @<name> with --plugin <name>; never as a human)",
     "  bb wa create <name> [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa handle <handle>",
@@ -1475,9 +1517,18 @@ export default async function plugin(bb: BbPluginApi) {
     async run(argv, ctx) {
       const args = [...argv];
       const json = hasFlag(args, "--json");
+      const pluginFlagIndex = args.indexOf("--plugin");
+      const pluginName = pluginFlagIndex === -1 ? undefined : args.splice(pluginFlagIndex, 2)[1];
       const [command, ...rest] = args;
-      // No BB_THREAD_ID means a human shell; agents always run inside a thread.
-      const actor: Actor = ctx.threadId ? { kind: "agent", threadId: ctx.threadId, projectId: ctx.projectId ?? null } : { kind: "human", memberId: HUMAN_MEMBER_ID };
+      // No BB_THREAD_ID means a shell or a script (automation, observer). Those post
+      // as a plugin-kind member (@cli, or --plugin <name>), never as the human; the
+      // human's own identity comes only from the page. Admin subcommands stay
+      // allowed from a shell, since a shell on the server host is the owner's.
+      const shell = !ctx.threadId;
+      const scriptName = pluginName;
+      const actor: Actor = ctx.threadId
+        ? { kind: "agent", threadId: ctx.threadId, projectId: ctx.projectId ?? null }
+        : { kind: "plugin", memberId: ensurePluginMember(scriptName ?? "cli").id, projectId: ctx.projectId ?? null };
       const reply = (value: unknown, text: string) => ({ exitCode: 0, stdout: json ? JSON.stringify(value) : text });
       const fail = (message: string) => ({ exitCode: 1, stderr: message });
       try {
@@ -1595,14 +1646,14 @@ export default async function plugin(bb: BbPluginApi) {
           case "unarchive":
           case "lock":
           case "unlock": {
-            if (actor.kind !== "human") return fail(`\`bb wa ${command}\` is human-only. Ask in #help if a channel should be ${command}ed.`);
+            if (!shell) return fail(`\`bb wa ${command}\` is human-only. Ask in #general if a channel should be ${command}ed.`);
             const [ref] = rest;
             if (!ref) return fail(usage);
             const channel = adminChannel(resolveChannel(ref), command);
             return reply(channel, formatChannel(channel));
           }
           case "posting": {
-            if (actor.kind !== "human") return fail("`bb wa posting` is human-only.");
+            if (!shell) return fail("`bb wa posting` is human-only.");
             const [ref, policy] = rest;
             const parsed = postingPolicySchema.safeParse(policy);
             if (!ref || !parsed.success) return fail(usage);

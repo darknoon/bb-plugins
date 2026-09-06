@@ -37,6 +37,7 @@ import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 type Overview = {
   me: Member;
+  isAdmin: boolean;
   channels: Channel[];
   members: Member[];
   projects: Array<{ id: string; name: string }>;
@@ -539,12 +540,16 @@ function ChannelSettings({
   rpc,
   refetch,
   onEdit,
+  identity,
+  isAdmin,
 }: {
   channel: Channel;
   projects: Array<{ id: string; name: string }>;
   rpc: Rpc;
   refetch: () => void;
   onEdit: () => void;
+  identity: HumanIdentity;
+  isAdmin: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const run = async (work: () => Promise<unknown>) => {
@@ -555,7 +560,7 @@ function ChannelSettings({
       toast.error(cause instanceof Error ? cause.message : String(cause));
     }
   };
-  const admin = (action: "archive" | "unarchive" | "lock" | "unlock") => run(() => rpc.call("wa_admin_channel", { channelId: channel.id, action }));
+  const admin = (action: "archive" | "unarchive" | "lock" | "unlock") => run(() => rpc.call("wa_admin_channel", { channelId: channel.id, action, identity }));
   const project = projects.find((p) => p.id === channel.projectId);
   const projectLabel = project?.name ?? channel.projectId ?? "None";
   const postingOptions: Array<{ value: PostingPolicy; label: string; hint: string }> = [
@@ -591,6 +596,7 @@ function ChannelSettings({
             {channel.projectId && !project ? <option value={channel.projectId}>{channel.projectId}</option> : null}
           </select>
         </label>
+        {isAdmin ? (
         <div className="mt-1 border-t border-border pt-1">
           <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Who can post</div>
           {postingOptions.map((option) => (
@@ -601,7 +607,7 @@ function ChannelSettings({
                 className="accent-primary"
                 checked={channel.posting === option.value}
                 disabled={!!channel.archivedAt || (option.value === "project-agents" && !channel.projectId)}
-                onChange={() => run(() => rpc.call("wa_set_posting", { channelId: channel.id, posting: option.value }))}
+                onChange={() => run(() => rpc.call("wa_set_posting", { channelId: channel.id, posting: option.value, identity }))}
               />
               <span className="flex min-w-0 flex-col">
                 <span>{option.label}</span>
@@ -610,6 +616,8 @@ function ChannelSettings({
             </label>
           ))}
         </div>
+        ) : null}
+        {isAdmin ? (
         <div className="mt-1 border-t border-border pt-1">
           <button type="button" className={menuRow} onClick={() => (channel.lockedAt ? admin("unlock") : admin("lock"))} disabled={!!channel.archivedAt}>
             <span>{channel.lockedAt ? "Unlock channel" : "Lock channel"}</span>
@@ -619,6 +627,7 @@ function ChannelSettings({
             <span>{channel.archivedAt ? "Unarchive channel" : "Archive channel"}</span>
           </button>
         </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -636,12 +645,12 @@ function describePresence(p: Presence): string {
   return "";
 }
 
-function PresenceChip({ presence, channelId, rpc, onChanged }: { presence: Presence[]; channelId: string; rpc: Rpc; onChanged: () => void }) {
+function PresenceChip({ presence, channelId, rpc, onChanged, identity, isAdmin }: { presence: Presence[]; channelId: string; rpc: Rpc; onChanged: () => void; identity: HumanIdentity; isAdmin: boolean }) {
   const navigate = useBbNavigate();
   const watching = presence.filter((p) => p.watchingUntil).length;
   const stopWatch = async (p: Presence) => {
     try {
-      await rpc.call("wa_admin_unwatch", { memberId: p.memberId, channelId });
+      await rpc.call("wa_admin_unwatch", { memberId: p.memberId, channelId, identity });
       onChanged();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : String(cause));
@@ -669,7 +678,7 @@ function PresenceChip({ presence, channelId, rpc, onChanged }: { presence: Prese
               <span className="min-w-0 truncate font-medium">@{p.handle}</span>
             )}
             <span className={cn("ml-auto shrink-0 text-[11px]", p.watchingUntil ? "text-foreground" : "text-muted-foreground")}>{describePresence(p)}</span>
-            {p.watchingUntil && p.kind === "agent" ? (
+            {isAdmin && p.watchingUntil && p.kind === "agent" ? (
               <button type="button" className="shrink-0 text-xs text-muted-foreground hover:text-destructive" aria-label={`Stop @${p.handle}'s watch`} title="Stop watching this channel" onClick={() => stopWatch(p)}>
                 ×
               </button>
@@ -689,6 +698,8 @@ function ChannelHeader({
   rpc,
   refetch,
   onBack,
+  identity,
+  isAdmin,
 }: {
   channel: Channel;
   projects: Array<{ id: string; name: string }>;
@@ -697,6 +708,8 @@ function ChannelHeader({
   rpc: Rpc;
   refetch: () => void;
   onBack?: () => void;
+  identity: HumanIdentity;
+  isAdmin: boolean;
 }) {
   const [editing, setEditing] = useState<null | { name: string; topic: string }>(null);
   const badge = (text: string) => <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">{text}</span>;
@@ -741,8 +754,8 @@ function ChannelHeader({
         <p className="mt-0.5 truncate text-xs text-muted-foreground">{channel.topic || "No topic yet."}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <PresenceChip presence={presence} channelId={channel.id} rpc={rpc} onChanged={refetch} />
-        <ChannelSettings channel={channel} projects={projects} rpc={rpc} refetch={refetch} onEdit={() => setEditing({ name: channel.name, topic: channel.topic })} />
+        <PresenceChip presence={presence} channelId={channel.id} rpc={rpc} onChanged={refetch} identity={identity} isAdmin={isAdmin} />
+        <ChannelSettings channel={channel} projects={projects} rpc={rpc} refetch={refetch} onEdit={() => setEditing({ name: channel.name, topic: channel.topic })} identity={identity} isAdmin={isAdmin} />
       </div>
     </header>
   );
@@ -838,6 +851,7 @@ function PostList({
   providers,
   humanHandle,
   myId,
+  isAdmin,
   onChannel,
   onDelete,
   onReact,
@@ -849,6 +863,7 @@ function PostList({
   providers: ProviderLookup;
   humanHandle: string;
   myId: string;
+  isAdmin: boolean;
   onChannel: (channel: Channel) => void;
   onDelete: (post: Post) => void;
   onReact: (post: Post, emoji: string) => void;
@@ -859,11 +874,15 @@ function PostList({
   const scroller = useRef<HTMLDivElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
   const lastId = posts[posts.length - 1]?.id ?? 0;
+  const channelId = posts[0]?.channelId ?? null;
+  const openedChannel = useRef<string | null>(null);
   useEffect(() => {
     const el = scroller.current;
+    const justOpened = channelId !== openedChannel.current;
+    openedChannel.current = channelId;
     const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-    if (nearBottom) bottom.current?.scrollIntoView({ block: "end" });
-  }, [lastId]);
+    if (justOpened || nearBottom) bottom.current?.scrollIntoView({ block: "end" });
+  }, [lastId, channelId]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
@@ -946,9 +965,11 @@ function PostList({
                           </button>
                         ))}
                         <ReactionPicker onReact={(emoji) => onReact(post, emoji)} className={MESSAGE_ACTION_CLASS} />
+                        {isAdmin || post.memberId === myId ? (
                         <button type="button" className={cn(MESSAGE_ACTION_CLASS, "hover:text-destructive")} aria-label="Delete post" onClick={() => onDelete(post)}>
                           ×
                         </button>
+                        ) : null}
                       </span>
                     </div>
                   ))}
@@ -1292,6 +1313,8 @@ function BoardPage({ subPath }: { subPath: string }) {
               rpc={rpc}
               refetch={refetch}
               onBack={compact ? () => navigate.toPluginPanel("whatsagent", { subPath: "" }) : undefined}
+              identity={identity}
+              isAdmin={overview.isAdmin}
             />
             <PostList
               posts={posts}
@@ -1300,6 +1323,7 @@ function BoardPage({ subPath }: { subPath: string }) {
               providers={providers}
               humanHandle={overview.me.handle}
               myId={overview.me.id}
+              isAdmin={overview.isAdmin}
               onChannel={select}
               onPickHumanAvatar={() => avatarInput.current?.click()}
               onReact={async (post, emoji) => {
@@ -1312,7 +1336,7 @@ function BoardPage({ subPath }: { subPath: string }) {
               }}
               onDelete={async (post) => {
                 try {
-                  await rpc.call("wa_delete_post", { postId: post.id });
+                  await rpc.call("wa_delete_post", { postId: post.id, identity });
                   refetchPosts();
                 } catch (cause) {
                   report(cause);
