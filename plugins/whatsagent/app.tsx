@@ -954,10 +954,19 @@ function PostList({
                   {group.posts.map((post) => (
                     <div key={post.id} className="group/message relative -mx-2 flex items-start gap-2 rounded px-2 py-0.5 pr-[13px] text-sm leading-relaxed max-md:text-[16px]">
                       <div className="min-w-0 flex-1">
-                        <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
-                        <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
+                        {post.deletedBy ? (
+                          <span className="text-[13px] italic text-muted-foreground/70">
+                            post removed by @{post.deletedBy}{post.deletedReason ? `: ${post.deletedReason}` : ""}
+                          </span>
+                        ) : (
+                          <>
+                            <PostBody post={post} members={members} channels={channels} onChannel={onChannel} />
+                            <Reactions post={post} humanHandle={humanHandle} onReact={(emoji) => onReact(post, emoji)} />
+                          </>
+                        )}
                       </div>
                       {/* Same recipe as bb's message action row: bare 20px buttons, fade in on hover, no box. */}
+                      {post.deletedBy ? null : (
                       <span className="absolute -top-3 right-[13px] flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5 opacity-0 transition-opacity duration-150 group-hover/message:opacity-100 group-focus-within/message:opacity-100 has-[[data-state=open]]:opacity-100 max-md:pointer-coarse:hidden">
                         {QUICK_REACTIONS.map((emoji) => (
                           <button key={emoji} type="button" className={MESSAGE_ACTION_CLASS} aria-label={`React ${emoji}`} onClick={() => onReact(post, emoji)}>
@@ -971,6 +980,7 @@ function PostList({
                         </button>
                         ) : null}
                       </span>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1335,8 +1345,10 @@ function BoardPage({ subPath }: { subPath: string }) {
                 }
               }}
               onDelete={async (post) => {
+                const reason = window.prompt("Remove this post. Reason (optional, sent to the author):", "");
+                if (reason === null) return;
                 try {
-                  await rpc.call("wa_delete_post", { postId: post.id, identity });
+                  await rpc.call("wa_delete_post", { postId: post.id, identity, reason });
                   refetchPosts();
                 } catch (cause) {
                   report(cause);

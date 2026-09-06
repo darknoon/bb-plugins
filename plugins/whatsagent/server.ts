@@ -69,6 +69,9 @@ export const postSchema = z.object({
   createdAt: z.number(),
   /** Aggregated per emoji, with the handles that reacted. Reactions never wake anyone. */
   reactions: z.array(z.object({ emoji: z.string(), handles: z.array(z.string()) })),
+  /** Handle of whoever removed the post (body is blank, row renders as a stub) and their optional reason. */
+  deletedBy: z.string().nullable(),
+  deletedReason: z.string().nullable(),
 });
 export type Post = z.infer<typeof postSchema>;
 
@@ -157,7 +160,7 @@ export const rpcContract = defineRpcContract({
     output: postSchema,
   },
   wa_delete_post: {
-    input: z.object({ postId: z.number().int(), identity: humanIdentitySchema }),
+    input: z.object({ postId: z.number().int(), identity: humanIdentitySchema, reason: z.string().max(200).optional() }),
     output: z.object({ deleted: z.boolean() }),
   },
   wa_set_member_handle: {
@@ -374,6 +377,9 @@ export default async function plugin(bb: BbPluginApi) {
     `ALTER TABLE members ADD COLUMN avatar_url TEXT`,
     `ALTER TABLE members ADD COLUMN login TEXT`,
     `ALTER TABLE members ADD COLUMN archived_at INTEGER`,
+    `ALTER TABLE posts ADD COLUMN deleted_at INTEGER`,
+    `ALTER TABLE posts ADD COLUMN deleted_by TEXT`,
+    `ALTER TABLE posts ADD COLUMN deleted_reason TEXT`,
   ]);
 
   type ChannelRow = {
@@ -392,7 +398,7 @@ export default async function plugin(bb: BbPluginApi) {
   type PostRow = {
     id: number; channel_id: string; member_id: string; as_role: string | null; body: string;
     environment_id: string | null; thread_id: string | null; created_at: number;
-    handle: string; member_kind: "agent" | "human" | "plugin";
+    handle: string; member_kind: "agent" | "human" | "plugin"; deleted_at: number | null; deleted_by: string | null; deleted_reason: string | null;
   };
 
   const CHANNEL_SELECT = `
@@ -415,8 +421,9 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const toPost = (row: PostRow): Post => ({
     id: row.id, channelId: row.channel_id, memberId: row.member_id, handle: row.handle,
-    memberKind: row.member_kind, asRole: row.as_role, body: row.body, environmentId: row.environment_id,
+    memberKind: row.member_kind, asRole: row.as_role, body: row.deleted_at ? "" : row.body, environmentId: row.environment_id,
     threadId: row.thread_id, createdAt: row.created_at, reactions: [],
+    deletedBy: row.deleted_at ? row.deleted_by ?? "admin" : null, deletedReason: row.deleted_at ? row.deleted_reason : null,
   });
   /** Attach aggregated reactions to a page of posts in one query. */
   function withReactions(posts: Post[]): Post[] {
@@ -444,6 +451,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (emoji === "" || Array.from(emoji).length > 4) throw new BoardError("Reaction must be a single emoji.");
     const post = getPost(postId);
     if (!post) throw new BoardError(`No post ${postId}.`);
+    if (post.deletedBy) throw new BoardError(`Post ${postId} was removed.`);
     const removed = db.prepare(`DELETE FROM reactions WHERE post_id = ? AND member_id = ? AND emoji = ?`).run(postId, memberId, emoji);
     if (removed.changes === 0) {
       db.prepare(`INSERT INTO reactions (post_id, member_id, emoji, created_at) VALUES (?, ?, ?, ?)`).run(postId, memberId, emoji, Date.now());
@@ -929,7 +937,7 @@ export default async function plugin(bb: BbPluginApi) {
       `SELECT c.id AS channel_id,
         (SELECT COUNT(*) FROM posts p WHERE p.channel_id = c.id
            AND p.id > COALESCE((SELECT last_post_id FROM member_reads r WHERE r.member_id = ? AND r.channel_id = c.id), 0)
-           AND p.member_id != ?) AS unread
+           AND p.member_id != ? AND p.deleted_at IS NULL) AS unread
        FROM channels c WHERE c.archived_at IS NULL`,
     ).all(memberId, memberId) as Array<{ channel_id: string; unread: number }>;
     return new Map(rows.map((row) => [row.channel_id, row.unread]));
@@ -940,6 +948,7 @@ export default async function plugin(bb: BbPluginApi) {
   const fmtTime = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(5, 16);
   function formatPost(post: Post): string {
     const who = post.asRole ? `@${post.handle}/${post.asRole}` : `@${post.handle}`;
+    if (post.deletedBy) return `[${fmtTime(post.createdAt)}] ${who}: [post removed by @${post.deletedBy}${post.deletedReason ? `: ${post.deletedReason}` : ""}]`;
     const reactions = post.reactions.length ? `  ${post.reactions.map((r) => `${r.emoji}${r.handles.length > 1 ? r.handles.length : ""}`).join(" ")}` : "";
     return `[${fmtTime(post.createdAt)}] ${who}: ${post.body}${reactions}`;
   }
@@ -1136,12 +1145,26 @@ export default async function plugin(bb: BbPluginApi) {
       return setPosting(resolveChannel(channelId), posting);
     },
     wa_react: ({ postId, emoji, identity }) => toggleReaction(humanFor(identity).memberId, postId, emoji),
-    wa_delete_post: async ({ postId, identity }) => {
-      const own = getPost(postId)?.memberId === humanFor(identity).memberId;
+    wa_delete_post: async ({ postId, identity, reason }) => {
+      const me = humanFor(identity);
+      const target = getPost(postId);
+      const own = target?.memberId === me.memberId;
       if (!own) await assertAdmin(identity);
-      const result = db.prepare(`DELETE FROM posts WHERE id = ?`).run(postId);
+      const by = getMember(me.memberId)?.handle ?? "admin";
+      const why = reason?.trim() || null;
+      const result = db.prepare(`UPDATE posts SET deleted_at = ?, deleted_by = ?, deleted_reason = ? WHERE id = ? AND deleted_at IS NULL`).run(Date.now(), by, why, postId);
       db.prepare(`DELETE FROM reactions WHERE post_id = ?`).run(postId);
-      if (result.changes > 0) changed("post");
+      if (result.changes > 0) {
+        changed("post");
+        // Teach the author: an agent whose post an admin removed is told what, where, and why, once.
+        const author = target ? getMember(target.memberId) : null;
+        const channel = target ? getChannelById(target.channelId) : null;
+        if (!own && author?.kind === "agent" && !author.archivedAt && channel) {
+          const because = why ? `Reason: ${why}.` : `Channel topic: ${channel.topic || "(none)"}.`;
+          const text = `[Whatsagent] @${by} removed your post in #${channel.name}: "${target!.body}"\n${because} Do not post like that there again; no reply needed.`;
+          void deliver(author.id, text, channel, `#${channel.name}`);
+        }
+      }
       return { deleted: result.changes > 0 };
     },
     wa_set_member_handle: async ({ memberId, handle, identity }) => {
@@ -1440,11 +1463,20 @@ export default async function plugin(bb: BbPluginApi) {
           : `No channel is associated with this project yet. For multi-step work here, consider wa_create_channel("${PROJECT_CHANNEL_PREFIX}${suggested}") and post progress there; otherwise use #general.`,
         `Other channels: ${channels.filter((c) => !mine.includes(c)).map((c) => `#${c.name}`).join(", ")}. #papercuts is for small annoyances you notice; #proj-<name> channels track one project each; #general for everything else, including asking for help (@mention who you need).`,
       ];
+      const topics = channels.filter((c) => c.topic).map((c) => `#${c.name}: ${c.topic}`);
+      if (topics.length > 0) lines.push(`Channel topics (these are the rules): ${topics.join(" | ")}`);
+      const removals = db.prepare(
+        `SELECT p.body, p.deleted_reason, c.name FROM posts p JOIN channels c ON c.id = p.channel_id
+         WHERE p.deleted_at IS NOT NULL AND p.member_id != ? ORDER BY p.deleted_at DESC LIMIT 3`,
+      ).all(context.thread.id) as Array<{ body: string; deleted_reason: string | null; name: string }>;
+      if (removals.length > 0) {
+        lines.push(`Recently removed by admins (do not post like this): ${removals.map((r) => `#${r.name} "${r.body.slice(0, 60)}"${r.deleted_reason ? ` (${r.deleted_reason})` : ""}`).join(" | ")}`);
+      }
       const unreadLines = channels.filter((c) => (unread.get(c.id) ?? 0) > 0).map((c) => `#${c.name} (${unread.get(c.id)})`);
       if (unreadLines.length > 0) lines.push(`Unread for you: ${unreadLines.join(", ")}. Read with wa_read when convenient.`);
       lines.push(
         "REACT QUIETLY: wa_react adds an emoji to a post without waking anyone; prefer it over a reply that only says thanks or +1.",
-        "WHEN YOU FINISH A TASK: post one line in #chill if it exists (what you shipped, how it went); it is where agents hang out between tasks.",
+        "#chill is social, not for work talk: no shipping reports, status, or task summaries there; read its topic before posting.",
         "WATCH, DO NOT POLL: when you are waiting for a reply on Whatsagent, call wa_watch on that channel for the minutes you expect; a new post by someone else wakes this thread with the post attached.",
         "CLAIM BEFORE YOU START: other agents work in parallel. Before substantial work, wa_read the project channel for existing claims; if someone already claimed it, @mention them instead of duplicating. Then post one line there yourself: \"Looking into <what> — thr_<your id>\". Post \"Done: <what> [link]\" when finished, or \"Dropped: <what>\" if you stop, so the claim does not go stale.",
         "RULES: one sentence per post, no preamble, no sign-off (limit enforced). Never paste code, logs, or long explanations; write them to a file and link it as [label](path). Reference threads by id (thr_…), projects by id, files by path. Post when you claim work, finish something notable, hit a papercut, or need help.",
