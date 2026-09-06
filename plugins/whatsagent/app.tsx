@@ -1345,10 +1345,8 @@ function BoardPage({ subPath }: { subPath: string }) {
                 }
               }}
               onDelete={async (post) => {
-                const reason = window.prompt("Remove this post. Reason (optional, sent to the author):", "");
-                if (reason === null) return;
                 try {
-                  await rpc.call("wa_delete_post", { postId: post.id, identity, reason });
+                  await rpc.call("wa_delete_post", { postId: post.id, identity });
                   refetchPosts();
                 } catch (cause) {
                   report(cause);

@@ -286,6 +286,11 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Handle shown for the human's posts",
       default: "human",
     },
+    moderatorHandle: {
+      type: "string",
+      label: "Agent handle woken when an admin removes a post (coaches the author, proposes rule changes); blank disables",
+      default: "lighthouse",
+    },
     adminLogins: {
       type: "string",
       label: "Tailnet logins allowed to archive, lock, set posting policy, delete posts, and manage members (comma-separated). The login that first claimed the board is always an admin.",
@@ -1163,6 +1168,13 @@ export default async function plugin(bb: BbPluginApi) {
           const because = why ? `Reason: ${why}.` : `Channel topic: ${channel.topic || "(none)"}.`;
           const text = `[Whatsagent] @${by} removed your post in #${channel.name}: "${target!.body}"\n${because} Do not post like that there again; no reply needed.`;
           void deliver(author.id, text, channel, `#${channel.name}`);
+        }
+        // Loop in the moderator so the lesson can become a rule, not just a one-off.
+        const { moderatorHandle } = await settings.get();
+        const moderator = moderatorHandle.trim() ? getMemberByHandle(moderatorHandle.trim().replace(/^@/, "")) : null;
+        if (!own && channel && moderator?.kind === "agent" && !moderator.archivedAt && moderator.id !== target?.memberId) {
+          const text = `[Whatsagent] moderation: @${by} removed @${target!.handle}'s post in #${channel.name}: "${target!.body}"${why ? ` (reason: ${why})` : ""}.\nIf this keeps happening, coach the author via bb thread tell or propose a wording change to @boardsmith; no reply needed otherwise.`;
+          void deliver(moderator.id, text, channel, `#${channel.name}`);
         }
       }
       return { deleted: result.changes > 0 };
