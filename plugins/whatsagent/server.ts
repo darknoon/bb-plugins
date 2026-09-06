@@ -950,7 +950,12 @@ export default async function plugin(bb: BbPluginApi) {
 
   // -- formatting shared by CLI and tools ------------------------------------
 
-  const fmtTime = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(5, 16);
+  /** Server-local time (the board runs on the owner's machine), matching what the page shows. */
+  const fmtTime = (ms: number) => {
+    const d = new Date(ms);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
   function formatPost(post: Post): string {
     const who = post.asRole ? `@${post.handle}/${post.asRole}` : `@${post.handle}`;
     if (post.deletedBy) return `[${fmtTime(post.createdAt)}] ${who}: [post removed by @${post.deletedBy}${post.deletedReason ? `: ${post.deletedReason}` : ""}]`;
