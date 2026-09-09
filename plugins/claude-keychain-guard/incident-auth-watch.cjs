@@ -5,6 +5,8 @@ const cp = require('node:child_process');
 const DIRECTORY = '/Users/andrew/.local/state/bb-claude-auth';
 const FILE = '/Users/andrew/.claude/.credentials.json';
 const KEYCHAIN = '/Users/andrew/Library/Keychains/login.keychain-db';
+// Observed access-token lifetime; expiry alone is never a failure signal.
+const REFRESH_CYCLE_MS = 8 * 60 * 60 * 1000;
 const stateOf = value => typeof value !== 'string' ? 'missing' : value.length ? 'present' : 'empty';
 function metadata(raw) {
   try {
@@ -25,17 +27,20 @@ function decide(previous, snapshot, now) {
   const condition = classify(snapshot, now);
   const changed = !previous || JSON.stringify(previous.snapshot) !== JSON.stringify(snapshot) || previous.condition !== condition;
   const conditionSince = previous?.condition === condition ? (previous.conditionSince ?? now) : now;
-  // An older file after a successful Keychain refresh is not an outage.
-  // A newer/differently-versioned file is worth investigating once, not hourly.
-  const staleFile = condition === 'stores-differ' && snapshot.file.expiresAt < snapshot.keychain.expiresAt;
-  const expiryPending = condition === 'keychain-expired' && now - conditionSince < 120000;
-  const actionable = condition !== 'ok' && !staleFile && !expiryPending;
-  const guardChanged = !!snapshot.guard && JSON.stringify(snapshot.guard) !== JSON.stringify(previous?.snapshot?.guard);
-  const previousAlertKey = previous?.alertKey;
-  // Only operational state transitions page the owner; timestamps alone do not.
-  const alertKey = actionable ? condition : null;
-  const alert = guardChanged || (alertKey !== null && alertKey !== previousAlertKey);
-  return {condition, conditionSince, alertKey, changed, alert,...(guardChanged ? {reason:'guard-blocked-denied-read'} : {})};
+  // A stale file is expected after Keychain refresh. A potentially newer file
+  // shadowed by the primary must persist for a full cycle before paging.
+  // Keep this independent of classify(): crossing expiry must not reset it.
+  const completeFile = snapshot.file.read === 'ok' && snapshot.file.access === 'present' && snapshot.file.refresh === 'present';
+  const completePrimary = snapshot.keychain.read === 'ok' && snapshot.keychain.access === 'present' && snapshot.keychain.refresh === 'present';
+  const staleFile = Number.isFinite(snapshot.file.expiresAt) && Number.isFinite(snapshot.keychain.expiresAt)
+    && snapshot.file.expiresAt < snapshot.keychain.expiresAt;
+  const divergent = completeFile && (snapshot.sameOAuth === false || !completePrimary)
+    && (!completePrimary || !staleFile);
+  const divergenceSince = divergent ? (previous?.divergenceSince ?? now) : null;
+  const alertKey = divergent && now - divergenceSince >= REFRESH_CYCLE_MS ? 'credential-divergence-persisted' : null;
+  const alert = alertKey !== null && alertKey !== previous?.alertKey;
+  // Read failures, expiry and guard interventions remain metadata, not pages.
+  return {condition, conditionSince, divergenceSince, alertKey, changed, alert};
 }
 function observe() {
   const args = ['find-generic-password','-a','andrew','-s','Claude Code-credentials'];
@@ -95,17 +100,17 @@ async function main() {
   }
   let lastAlertAt = previous?.lastAlertAt || 0;
   if (decision.alert) {
-    const body = '@codex-rvbx auth observer: '+(decision.reason || decision.condition)+' on mini; inspect before recovery—this check changed no credentials.';
+    const body = '@codex-rvbx auth observer: credential divergence persisted for 8h on mini; inspect before recovery—no credentials changed.';
     await postAlert(body);
     lastAlertAt = now;
   }
-  const next = {snapshot,condition:decision.condition,conditionSince:decision.conditionSince,alertKey:decision.alertKey,lastAlertAt,checkedAt:new Date(now).toISOString()};
+  const next = {snapshot,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,checkedAt:new Date(now).toISOString()};
   const pending = path.join(DIRECTORY,'state.next.json');
   fs.writeFileSync(pending,JSON.stringify(next)+'\n',{mode:0o600});
   fs.renameSync(pending,statePath);
   // Automation treats a quiet exit as a skipped, healthy tick.
 }
-module.exports = {metadata,classify,decide,postAlert};
+module.exports = {metadata,classify,decide,postAlert,REFRESH_CYCLE_MS};
 if (require.main === module) {
   main().catch(() => { console.error('auth observer failed; inspect automation run'); process.exitCode = 1; });
 }
