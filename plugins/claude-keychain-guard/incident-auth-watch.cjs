@@ -1,10 +1,11 @@
-// Read-only credential observer: metadata only, never refreshes or repairs.
+// Credential observer + encrypted snapshots; never refreshes or repairs primary credentials.
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const DIRECTORY = '/Users/andrew/.local/state/bb-claude-auth';
 const FILE = '/Users/andrew/.claude/.credentials.json';
 const KEYCHAIN = '/Users/andrew/Library/Keychains/login.keychain-db';
+const VAULT = '/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault';
 // Observed access-token lifetime; expiry alone is never a failure signal.
 const REFRESH_CYCLE_MS = 8 * 60 * 60 * 1000;
 const stateOf = value => typeof value !== 'string' ? 'missing' : value.length ? 'present' : 'empty';
@@ -37,12 +38,15 @@ function decide(previous, snapshot, now) {
   const divergent = completeFile && (snapshot.sameOAuth === false || !completePrimary)
     && (!completePrimary || !staleFile);
   const divergenceSince = divergent ? (previous?.divergenceSince ?? now) : null;
-  const alertKey = divergent && now - divergenceSince >= REFRESH_CYCLE_MS ? 'credential-divergence-persisted' : null;
+  const backupFailed = snapshot.backup && snapshot.backup.exitCode !== 0;
+  const alertKey = backupFailed ? (snapshot.backup.exitCode === 78 ? 'encrypted-backup-not-ready' : 'encrypted-backup-failed') : divergent && now - divergenceSince >= REFRESH_CYCLE_MS ? 'credential-divergence-persisted' : null;
   const alert = alertKey !== null && alertKey !== previous?.alertKey;
   // Read failures, expiry and guard interventions remain metadata, not pages.
   return {condition, conditionSince, divergenceSince, alertKey, changed, alert};
 }
 function observe() {
+  const capture = cp.spawnSync(VAULT, ['checkpoint'], {encoding:'utf8',timeout:2000});
+  const backup = {exitCode:capture.status,timedOut:capture.error?.code === 'ETIMEDOUT'};
   const args = ['find-generic-password','-a','andrew','-s','Claude Code-credentials'];
   const secret = cp.spawnSync('/usr/bin/security', [...args,'-w',KEYCHAIN], {encoding:'utf8',timeout:5000});
   const attrs = cp.spawnSync('/usr/bin/security', [...args,KEYCHAIN], {encoding:'utf8',timeout:5000});
@@ -71,7 +75,7 @@ function observe() {
       if (Number.isInteger(last.at) && Number.isInteger(last.parentPid)) guard = {at:last.at,parentPid:last.parentPid,size};
     } finally { fs.closeSync(fd); }
   } catch { /* Guard log may not exist until the first denied read. */ }
-  return {keychain,file,sameOAuth,guard};
+  return {keychain,file,sameOAuth,guard,backup};
 }
 async function postAlert(body, {env = process.env, spawn = cp.spawnSync, request = fetch} = {}) {
   // Never fall back to a human CLI identity; keep the plugin token in memory.
@@ -100,7 +104,11 @@ async function main() {
   }
   let lastAlertAt = previous?.lastAlertAt || 0;
   if (decision.alert) {
-    const body = '@codex-rvbx auth observer: credential divergence persisted for 8h on mini; inspect before recovery—no credentials changed.';
+    const body = decision.alertKey === 'encrypted-backup-not-ready'
+      ? '@codex-rvbx encrypted auth backup is not ready: no tokens available to capture; primary credentials unchanged.'
+      : decision.alertKey === 'encrypted-backup-failed'
+      ? '@codex-rvbx encrypted auth backup failed; inspect capture before relying on recovery—primary credentials unchanged.'
+      : '@codex-rvbx auth observer: credential divergence persisted for 8h on mini; inspect before recovery—primary credentials unchanged.';
     await postAlert(body);
     lastAlertAt = now;
   }
