@@ -126,6 +126,18 @@ test('old observer expiry state migrates silently',()=>{
   const result=decide({snapshot,condition:'keychain-expired',alertKey:'keychain-expired',conditionSince:0},snapshot,now);
   assert.equal(result.alert,false);assert.equal(result.alertKey,null);
 });
+test('backup capture failure alerts once and normal capture resets it',()=>{
+  const snapshot={...good,backup:{exitCode:74,timedOut:false}};
+  const first=decide(null,snapshot,now);
+  assert.equal(first.alert,true);assert.equal(first.alertKey,'encrypted-backup-failed');
+  assert.equal(decide({...first,snapshot},snapshot,now+1).alert,false);
+  const healthy={...good,backup:{exitCode:0,timedOut:false}};
+  assert.equal(decide({...first,snapshot},healthy,now+2).alert,false);
+});
+test('empty initial backup is explicitly not ready, never reported protected',()=>{
+  const result=decide(null,{...good,backup:{exitCode:78,timedOut:false}},now);
+  assert.equal(result.alert,true);assert.equal(result.alertKey,'encrypted-backup-not-ready');
+});
 test('stale file stays silent over multiple Keychain expiry and refresh cycles',()=>{
   let previous=null;
   for(let cycle=0;cycle<4;cycle++) {

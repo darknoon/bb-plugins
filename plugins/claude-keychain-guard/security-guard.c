@@ -7,12 +7,22 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 #include "guard-policy.h"
 #ifndef BB_SECURITY_EXECUTABLE
 #define BB_SECURITY_EXECUTABLE "/usr/bin/security"
 #endif
 #ifndef BB_AUTH_LOG_DIRECTORY
 #define BB_AUTH_LOG_DIRECTORY "/Users/andrew/.local/state/bb-claude-auth"
+#endif
+#ifndef BB_READ_SELECTOR
+#define BB_READ_SELECTOR "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/read-selector.cjs"
+#endif
+#ifndef BB_ENABLE_READ_SELECTOR
+#define BB_ENABLE_READ_SELECTOR 0
+#endif
+#ifndef BB_AUTH_VAULT
+#define BB_AUTH_VAULT "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault"
 #endif
 static long long millis(clockid_t clock) {
     struct timespec t;
@@ -50,14 +60,39 @@ static void trace(const char *op, const char *phase, int child_pid, int original
 }
 static volatile sig_atomic_t child = -1;
 static void forward_signal(int sig) { if (child > 0) kill(child, sig); }
+static void checkpoint(const char *phase) {
+    long long start=millis(CLOCK_MONOTONIC);
+    pid_t backup=fork();
+    if(backup<0){trace("backup",phase,-1,1,1,0);return;}
+    if(backup==0){
+        int nullfd=open("/dev/null",O_RDWR);
+        if(nullfd<0)_exit(1);
+        dup2(nullfd,0);dup2(nullfd,1);dup2(nullfd,2);if(nullfd>2)close(nullfd);
+        execl(BB_AUTH_VAULT,BB_AUTH_VAULT,"checkpoint",(char*)NULL);_exit(127);
+    }
+    int status=0,result=1;
+    while(1){
+        pid_t done=waitpid(backup,&status,WNOHANG);
+        if(done==backup){result=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);break;}
+        if(done<0&&errno!=EINTR)break;
+        if(millis(CLOCK_MONOTONIC)-start>=350){kill(backup,SIGKILL);while(waitpid(backup,&status,0)<0&&errno==EINTR){}result=124;break;}
+        struct timespec delay={0,1000000};nanosleep(&delay,NULL);
+    }
+    trace("backup",phase,backup,result,result,millis(CLOCK_MONOTONIC)-start);
+}
 int main(int argc, char **argv) {
     const char *op = operation(argc, argv);
     const long long start = millis(CLOCK_MONOTONIC);
     signal(SIGTERM, forward_signal); signal(SIGINT, forward_signal); signal(SIGHUP, forward_signal);
+    int mutation=op && strcmp(op,"read");
+    if(mutation)checkpoint("before-write");
     child = fork();
     if (child < 0) return 1;
     if (child == 0) {
-        argv[0] = BB_SECURITY_EXECUTABLE;
+        const char *select = getenv("BB_CLAUDE_AUTH_READ_SELECTION");
+        int secret_read=0;
+        for(int i=2;i<argc;i++)if(!strcmp(argv[i],"-w"))secret_read=1;
+        argv[0] = BB_ENABLE_READ_SELECTOR && select && !strcmp(select,"verified") && guarded_read(argc,argv) && secret_read ? BB_READ_SELECTOR : BB_SECURITY_EXECUTABLE;
         execv(argv[0], argv);
         _exit(127);
     }
@@ -67,6 +102,7 @@ int main(int argc, char **argv) {
     int original = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
     int result = guarded_exit(argc, argv, original);
     trace(op,"finish",child,original,result,millis(CLOCK_MONOTONIC)-start);
+    if(mutation)checkpoint("after-write");
     if (result != original) {
         int fd = log_fd(BB_AUTH_LOG_DIRECTORY "/guard.jsonl");
         if (fd >= 0) {
