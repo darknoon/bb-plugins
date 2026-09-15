@@ -6,6 +6,8 @@ const DIRECTORY = '/Users/andrew/.local/state/bb-claude-auth';
 const FILE = '/Users/andrew/.claude/.credentials.json';
 const KEYCHAIN = '/Users/andrew/Library/Keychains/login.keychain-db';
 const VAULT = '/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault';
+const {readBlocks,blockAlert}=require('/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/block-alert.cjs');
+const CANARY='thr_bn2xraubgc';
 // Observed access-token lifetime; expiry alone is never a failure signal.
 const REFRESH_CYCLE_MS = 8 * 60 * 60 * 1000;
 const stateOf = value => typeof value !== 'string' ? 'missing' : value.length ? 'present' : 'empty';
@@ -91,12 +93,29 @@ async function postAlert(body, {env = process.env, spawn = cp.spawnSync, request
     if (!response.ok) throw new Error();
   } catch { throw new Error('alert-delivery-failed'); }
 }
+function signalCanary({env=process.env,spawn=cp.spawnSync}={}){
+  const cli=env.BB_CLI||'bb';
+  const state=spawn(cli,['thread','show',CANARY,'--json'],{encoding:'utf8',timeout:5000});
+  if(state.status!==0)throw new Error('canary-status-failed');
+  let status;try{status=JSON.parse(state.stdout).thread.status;}catch{throw new Error('canary-status-invalid');}
+  const command=status==='error'?['thread','retry',CANARY,'--reason','Auth observer: repeated credential-clear attempts','--json']:
+    ['thread','tell',CANARY,'Auth alarm verification only: reply AUTH_OK if this request succeeds; do not post, renew watches, or perform other work.','--json'];
+  const result=spawn(cli,command,{encoding:'utf8',timeout:10000});
+  if(result.status!==0)throw new Error('canary-dispatch-failed');
+  // Genuine auth failure on this visible top-level thread reaches the built-in push sender.
+}
 async function main() {
   fs.mkdirSync(DIRECTORY,{recursive:true,mode:0o700});
   const statePath = path.join(DIRECTORY,'state.json');
   let previous;
   try { previous = JSON.parse(fs.readFileSync(statePath,'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw new Error('state-unreadable'); }
   const now = Date.now(), snapshot = observe(), decision = decide(previous,snapshot,now);
+  const blocks=readBlocks(path.join(DIRECTORY,'security-operations.jsonl'),now);
+  const repeatedBlocks=blockAlert(previous?.repeatedBlocks,blocks);
+  if(repeatedBlocks.alert){
+    signalCanary();
+    await postAlert('@codex-rvbx blocked three credential clears in 30m; testing the visible auth alarm because the token may be revoked.');
+  }
   if (decision.changed) {
     // Monthly files are bounded by one sample/minute; no raw debug logs.
     const log = path.join(DIRECTORY,new Date(now).toISOString().slice(0,7)+'.jsonl');
@@ -112,13 +131,13 @@ async function main() {
     await postAlert(body);
     lastAlertAt = now;
   }
-  const next = {snapshot,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,checkedAt:new Date(now).toISOString()};
+  const next = {snapshot,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,repeatedBlocks:{notified:repeatedBlocks.notified},checkedAt:new Date(now).toISOString()};
   const pending = path.join(DIRECTORY,'state.next.json');
   fs.writeFileSync(pending,JSON.stringify(next)+'\n',{mode:0o600});
   fs.renameSync(pending,statePath);
   // Automation treats a quiet exit as a skipped, healthy tick.
 }
-module.exports = {metadata,classify,decide,postAlert,REFRESH_CYCLE_MS};
+module.exports = {metadata,classify,decide,postAlert,signalCanary,REFRESH_CYCLE_MS};
 if (require.main === module) {
   main().catch(() => { console.error('auth observer failed; inspect automation run'); process.exitCode = 1; });
 }

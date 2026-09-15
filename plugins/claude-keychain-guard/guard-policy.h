@@ -1,4 +1,9 @@
 #include <string.h>
+static inline const char *verified_caller(const char *path) {
+    if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.261")) return "2.1.261";
+    if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.270")) return "2.1.270";
+    return NULL;
+}
 static int guarded_read(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "find-generic-password")) return 0;
     int account = 0, service = 0;
