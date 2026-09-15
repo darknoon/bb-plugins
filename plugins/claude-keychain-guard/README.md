@@ -2,11 +2,19 @@
 
 **Not a permanent auth fix.** This guard missed the stale-copy recurrence; error 36 was simulated, not captured during that outage.
 
+**September 14, second mitigation deployed:** verified Claude 2.1.261/270 callers cannot overwrite populated OAuth tokens with the empty-string cleanup record. The filter withholds that exact write until Claude's 2s timeout marks it transient; ordinary exit-1 would instead wipe the file and delete Keychain. Unknown callers/versions, normal refresh writes, OAuth removal, and logout pass through. This preserves records, **not revoked-token validity**. Lighthouse authenticated after deployment with Figma/Notion visible; 51 focused tests passed.
+
+Three blocked writes within 30 minutes trigger one real request on protected visible alarm thread `thr_bn2xraubgc`; its genuine auth failure uses bb's existing mobile push path. This is not a general direct-push API, and phone delivery is still subject to bb's read/coalescing rules. A quiet 30-minute interval rearms the alarm. No test failure was injected into production.
+
+**September 14: access restored; backup capture broken.** Copied the validated new file login into the empty Keychain; lighthouse returned `AUTH_OK` and annex thread `thr_5wv4ecfhj8` completed its retry. Lighthouse watches remain off.
+
+The vault captured the new file token, but native reads of Claude's item returned `-25293` even with the login Keychain explicitly selected. The bounded `/usr/bin/security` reader candidate passes five tests. Replacing the helper then made its existing backup item unreadable (exit 74); rebuilding the prior source did not restore access. Neither backup item nor ACL was changed. **Do not rely on capture or overwrite/delete that backup.** Candidate: `auth-vault-primary-candidate.m`; fix stable helper identity/access before deploying again. These changes are uncommitted and unpushed.
+
 Unreleased candidate: `read-selector.cjs` selects newer file OAuth after account verification; it remains **disabled**, including at compile time in production. Do not enable it without the approval previously requested.
 
 This compatibility shim changes one result: denied reads (exit 36) of Andrew's exact Claude credential item become read failures (exit 1), so Claude's existing strict mutation aborts instead of switching stores and clearing another token.
 
-The delegate passes credential operations through unchanged apart from that exit-code mapping; its logs contain only operation type, PIDs, elapsed time and exit codes. Since September 12 it also invokes `auth-vault checkpoint` before and after writes/deletes, with a 350ms deadline per checkpoint. Backup failure does not block Claude's write.
+The delegate also logs fixed write-policy decisions and token-presence booleans, never payloads. Since September 12 it invokes `auth-vault checkpoint` before and after writes/deletes, with a 350ms deadline per checkpoint. Backup failure does not block Claude's write.
 
 Installed from `/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard` with `allThreads=true`; bb launches use `claude-guarded` on mini only. Runtime logs/state live in `/Users/andrew/.local/state/bb-claude-auth` (directory 0700, files 0600). Existing processes may retain their old PATH until normally released/restarted. SSH shells are **not configured**. No native Claude source or Keychain ACL changes.
 
@@ -21,12 +29,12 @@ Both real stores were already empty at first capture, so no usable backup existe
 ## Build / test
 
 ```sh
-clang -Wall -Wextra -Werror security-guard.c -o bin/security
+clang -Wall -Wextra -Werror -DBB_ENABLE_WRITE_GUARD=1 security-guard.c -o bin/security
 clang -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-deprecated-declarations -framework Foundation -framework Security auth-vault.m -o bin/auth-vault
 bin/auth-vault selftest
 clang -Wall -Wextra -Werror guard-policy.test.c -o /private/tmp/bb-auth-guard-policy-test
 /private/tmp/bb-auth-guard-policy-test
-node --test security-trace.test.cjs incident-storage-261.test.cjs incident-auth-watch.test.cjs
+node --test empty-write.test.cjs block-alert.test.cjs security-trace.test.cjs incident-storage-261.test.cjs incident-auth-watch.test.cjs
 ./node_modules/.bin/tsc --noEmit
 bb plugin build
 bb plugin install . --yes
@@ -35,6 +43,6 @@ bb automation update auto_3fgwutht3og --project proj_hn93u3x5mv --script-file ./
 
 Owner/on-call: `thr_qgrnaqrvbx`; protected canary: `thr_rden4mbx6p` (never archive). Source characterization tests require the installed Claude 2.1.261 binary and use dummy credentials only.
 
-Coverage is deliberately narrow: Claude 2.1.261's reproduced exit-36 bug, not stale-copy invalidation. Two real refresh cycles succeeded after recovery, which does not establish prevention.
+Coverage remains narrow: empty-token record preservation cannot make a revoked refresh token valid. `auth-vault-primary-candidate.m authorize-backup` is prepared but not installed: only explicit human approval may open its macOS prompt for `bb-Claude-auth-recovery-v1`; background operations must never prompt. Retain old encrypted backup history. Never use `-A` or relax Claude's own item permissions.
 
 Disable with `bb plugin disable claude-keychain-guard`, then release/restart guarded runtimes; retain this directory while installed.

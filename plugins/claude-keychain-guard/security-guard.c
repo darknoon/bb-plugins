@@ -1,4 +1,4 @@
-// Transparent security command delegate; never parses or saves credential data.
+// Security delegate; the write filter inspects credentials only in memory.
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <libproc.h>
 #include "guard-policy.h"
 #ifndef BB_SECURITY_EXECUTABLE
 #define BB_SECURITY_EXECUTABLE "/usr/bin/security"
@@ -23,6 +24,12 @@
 #endif
 #ifndef BB_AUTH_VAULT
 #define BB_AUTH_VAULT "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault"
+#endif
+#ifndef BB_WRITE_GUARD
+#define BB_WRITE_GUARD "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/write-guard.cjs"
+#endif
+#ifndef BB_ENABLE_WRITE_GUARD
+#define BB_ENABLE_WRITE_GUARD 0
 #endif
 static long long millis(clockid_t clock) {
     struct timespec t;
@@ -83,6 +90,15 @@ static void checkpoint(const char *phase) {
 int main(int argc, char **argv) {
     const char *op = operation(argc, argv);
     const long long start = millis(CLOCK_MONOTONIC);
+    char caller[PROC_PIDPATHINFO_MAXSIZE]={0};
+#ifdef BB_TEST_CALLER_PATH
+    snprintf(caller,sizeof(caller),"%s",BB_TEST_CALLER_PATH);
+#else
+    proc_pidpath(getppid(),caller,sizeof(caller));
+#endif
+    const char *version=verified_caller(caller);
+    int filtered=BB_ENABLE_WRITE_GUARD && version && op && (!strcmp(op,"write") || (!strcmp(op,"interactive-write") && !isatty(0)));
+    if(BB_ENABLE_WRITE_GUARD && !version && op && strcmp(op,"read"))trace(op,"unverified-caller",-1,-1,-1,0);
     signal(SIGTERM, forward_signal); signal(SIGINT, forward_signal); signal(SIGHUP, forward_signal);
     int mutation=op && strcmp(op,"read");
     if(mutation)checkpoint("before-write");
@@ -92,7 +108,10 @@ int main(int argc, char **argv) {
         const char *select = getenv("BB_CLAUDE_AUTH_READ_SELECTION");
         int secret_read=0;
         for(int i=2;i<argc;i++)if(!strcmp(argv[i],"-w"))secret_read=1;
-        argv[0] = BB_ENABLE_READ_SELECTOR && select && !strcmp(select,"verified") && guarded_read(argc,argv) && secret_read ? BB_READ_SELECTOR : BB_SECURITY_EXECUTABLE;
+        if(filtered)setenv("BB_VERIFIED_CLAUDE_CALLER",version,1);
+        else unsetenv("BB_VERIFIED_CLAUDE_CALLER");
+        argv[0] = filtered ? BB_WRITE_GUARD :
+            BB_ENABLE_READ_SELECTOR && select && !strcmp(select,"verified") && guarded_read(argc,argv) && secret_read ? BB_READ_SELECTOR : BB_SECURITY_EXECUTABLE;
         execv(argv[0], argv);
         _exit(127);
     }
