@@ -5,7 +5,7 @@
 const fs=require('node:fs');
 const cp=require('node:child_process');
 const LIMIT=1024*1024;
-const VERIFIED_VERSIONS=new Set(['2.1.261','2.1.270']);
+const VERIFIED_VERSIONS=new Set(['2.1.261','2.1.270','2.1.273','2.1.274']);
 function words(line){
   const out=[];let word='',quote=null,started=false;
   for(let i=0;i<line.length;i++){

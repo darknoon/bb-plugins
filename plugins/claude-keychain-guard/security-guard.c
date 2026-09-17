@@ -23,7 +23,7 @@
 #define BB_ENABLE_READ_SELECTOR 0
 #endif
 #ifndef BB_AUTH_VAULT
-#define BB_AUTH_VAULT "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault"
+#define BB_AUTH_VAULT "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault-v2"
 #endif
 #ifndef BB_WRITE_GUARD
 #define BB_WRITE_GUARD "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/write-guard.cjs"

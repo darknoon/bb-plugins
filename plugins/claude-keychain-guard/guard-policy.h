@@ -2,6 +2,8 @@
 static inline const char *verified_caller(const char *path) {
     if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.261")) return "2.1.261";
     if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.270")) return "2.1.270";
+    if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.273")) return "2.1.273";
+    if (!strcmp(path,"/Users/andrew/.local/share/claude/versions/2.1.274")) return "2.1.274";
     return NULL;
 }
 static int guarded_read(int argc, char **argv) {

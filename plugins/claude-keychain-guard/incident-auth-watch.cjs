@@ -5,12 +5,30 @@ const cp = require('node:child_process');
 const DIRECTORY = '/Users/andrew/.local/state/bb-claude-auth';
 const FILE = '/Users/andrew/.claude/.credentials.json';
 const KEYCHAIN = '/Users/andrew/Library/Keychains/login.keychain-db';
-const VAULT = '/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault';
+const VAULT = '/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault-v2';
 const {readBlocks,blockAlert}=require('/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/block-alert.cjs');
 const CANARY='thr_bn2xraubgc';
 // Observed access-token lifetime; expiry alone is never a failure signal.
 const REFRESH_CYCLE_MS = 8 * 60 * 60 * 1000;
 const stateOf = value => typeof value !== 'string' ? 'missing' : value.length ? 'present' : 'empty';
+function lighthouseAuthFailed({spawn=cp.spawnSync,env=process.env}={}) {
+  const cli=env.BB_CLI||'bb';
+  const options={encoding:'utf8',timeout:5000,maxBuffer:256*1024};
+  const state=spawn(cli,['thread','show','thr_rden4mbx6p','--json'],options);
+  try { if(state.status!==0)return null; if(JSON.parse(state.stdout).thread.status!=='error')return false; } catch { return null; }
+  const log=spawn(cli,['thread','log','thr_rden4mbx6p','--limit','1'],options);
+  if(log.status!==0)return null;
+  return /Failed to authenticate: OAuth session expired/.test(log.stdout);
+}
+function outageDecision(previous,snapshot,now) {
+  const missing=snapshot.keychain.read==='ok' && (snapshot.keychain.access!=='present'||snapshot.keychain.refresh!=='present');
+  const unavailableSince=missing?(previous?.unavailableSince??now):null;
+  const failed=snapshot.lighthouseAuthFailed===true || (missing && now-unavailableSince>=120000);
+  // Unknown reads cannot rearm an already-issued outage alert.
+  const healthy=snapshot.lighthouseAuthFailed===false && snapshot.keychain.read==='ok' && !missing;
+  const notified=failed?true:healthy?false:previous?.outageNotified===true;
+  return {unavailableSince,outageNotified:notified,alert:failed&&!previous?.outageNotified};
+}
 function metadata(raw) {
   try {
     const oauth = JSON.parse(raw).claudeAiOauth;
@@ -77,7 +95,7 @@ function observe() {
       if (Number.isInteger(last.at) && Number.isInteger(last.parentPid)) guard = {at:last.at,parentPid:last.parentPid,size};
     } finally { fs.closeSync(fd); }
   } catch { /* Guard log may not exist until the first denied read. */ }
-  return {keychain,file,sameOAuth,guard,backup};
+  return {keychain,file,sameOAuth,guard,backup,lighthouseAuthFailed:lighthouseAuthFailed()};
 }
 async function postAlert(body, {env = process.env, spawn = cp.spawnSync, request = fetch} = {}) {
   // Never fall back to a human CLI identity; keep the plugin token in memory.
@@ -110,9 +128,17 @@ async function main() {
   let previous;
   try { previous = JSON.parse(fs.readFileSync(statePath,'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw new Error('state-unreadable'); }
   const now = Date.now(), snapshot = observe(), decision = decide(previous,snapshot,now);
+  const outage=outageDecision(previous,snapshot,now);
+  if(outage.alert) {
+    // An existing backup error must never suppress a new loss of access.
+    await postAlert(snapshot.lighthouseAuthFailed===true
+      ? '@codex-rvbx SEV: Lighthouse failed OAuth authentication; recovery needed, credentials unchanged.'
+      : '@codex-rvbx Claude primary tokens have been missing for 2m; recovery check needed, credentials unchanged.');
+    try { signalCanary(); } catch { /* Board delivery must survive canary dispatch failure. */ }
+  }
   const blocks=readBlocks(path.join(DIRECTORY,'security-operations.jsonl'),now);
   const repeatedBlocks=blockAlert(previous?.repeatedBlocks,blocks);
-  if(repeatedBlocks.alert){
+  if(repeatedBlocks.alert && !outage.alert){
     signalCanary();
     await postAlert('@codex-rvbx blocked three credential clears in 30m; testing the visible auth alarm because the token may be revoked.');
   }
@@ -122,7 +148,7 @@ async function main() {
     fs.appendFileSync(log,JSON.stringify({observedAt:new Date(now).toISOString(),condition:decision.condition,snapshot})+'\n',{mode:0o600});
   }
   let lastAlertAt = previous?.lastAlertAt || 0;
-  if (decision.alert) {
+  if (decision.alert && !outage.alert) {
     const body = decision.alertKey === 'encrypted-backup-not-ready'
       ? '@codex-rvbx encrypted auth backup is not ready: no tokens available to capture; primary credentials unchanged.'
       : decision.alertKey === 'encrypted-backup-failed'
@@ -131,13 +157,13 @@ async function main() {
     await postAlert(body);
     lastAlertAt = now;
   }
-  const next = {snapshot,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,repeatedBlocks:{notified:repeatedBlocks.notified},checkedAt:new Date(now).toISOString()};
+  const next = {snapshot,unavailableSince:outage.unavailableSince,outageNotified:outage.outageNotified,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,repeatedBlocks:{notified:repeatedBlocks.notified},checkedAt:new Date(now).toISOString()};
   const pending = path.join(DIRECTORY,'state.next.json');
   fs.writeFileSync(pending,JSON.stringify(next)+'\n',{mode:0o600});
   fs.renameSync(pending,statePath);
   // Automation treats a quiet exit as a skipped, healthy tick.
 }
-module.exports = {metadata,classify,decide,postAlert,signalCanary,REFRESH_CYCLE_MS};
+module.exports = {metadata,classify,decide,postAlert,signalCanary,REFRESH_CYCLE_MS,lighthouseAuthFailed,outageDecision};
 if (require.main === module) {
   main().catch(() => { console.error('auth observer failed; inspect automation run'); process.exitCode = 1; });
 }
