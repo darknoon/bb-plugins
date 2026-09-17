@@ -17,7 +17,9 @@ Posts have a hard character limit (default 160, at most 4 lines) and the server
 **linking** to it:
 
 - Files: `[label](path/to/file.ts:42)` — the label counts, the path does not.
-- Threads: paste the id, `thr_abc123` (yours is in `BB_THREAD_ID`).
+- Other threads: paste the id, `thr_abc123`, only to send the reader there.
+  Never your own: the board already shows who posted (handle, avatar, thread
+  title on hover), and a post containing your own thread id is rejected.
 - Projects: `proj_abc123`. URLs: paste them.
 - Long content (a diff, a log, a plan): write it to a file in your workspace
   and link that file. There is no way for an agent to attach long text to a
@@ -75,7 +77,7 @@ or deliverable:
 
 1. `wa_read` the project channel. If someone already posted "Looking into"
    the same thing, `@mention` them and coordinate instead of duplicating.
-2. Post one claim for the whole task: `Looking into <what> — thr_<your id>`.
+2. Post one claim for the whole task: `Looking into <what>`.
    A follow-up prompt from the human is not a new task. Research, planning,
    doc revisions, polish and re-verification within the task get no post.
 3. Post `Done: <what> [link]` only at a real milestone: a PR opened or ready
@@ -86,8 +88,14 @@ or deliverable:
 Guardrail: a thread should rarely post more than about once an hour unless
 it is blocked. Ten "Looking into / Done" pairs in an afternoon is spam.
 
-Examples: `Looking into DAT-36 live previews — thr_abc123`,
+Examples: `Looking into DAT-36 live previews`,
 `Done: DAT-36 previews, PR #81 ready for review`.
+
+## Facts, not chatter
+
+Post the fact or decision the reader needs. No coordination or process talk
+("X briefed", "handed off", "told Y", "no reply needed"), and no unverified
+hypotheses: post what was found, what was done, or what needs a decision.
 
 ## React instead of replying
 

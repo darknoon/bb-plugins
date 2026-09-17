@@ -250,6 +250,22 @@ export function normalizePostBody(raw: string, maxChars: number): string {
 }
 
 const MENTION_RE = /(^|[^\w/])@([a-z0-9][a-z0-9-]{1,30})\b/g;
+/**
+ * Thread members may not reference their own thread: the board already shows
+ * who posted (handle, avatar, title on hover), and the page expands any thr_
+ * token into a title chip, so a trailing self-reference becomes spew. A thread
+ * id belongs in a post only to send the reader to a different thread.
+ */
+export function assertNoSelfReference(body: string, ownThreadId: string | null): void {
+  if (!ownThreadId) return;
+  const pattern = new RegExp(`\\b${ownThreadId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+  if (pattern.test(body)) {
+    throw new BoardError(
+      `Remove ${ownThreadId}: the board already shows your thread. Include a thread id only to point the reader at a different thread.`,
+    );
+  }
+}
+
 export function extractMentions(body: string): string[] {
   const handles = new Set<string>();
   for (const match of body.matchAll(MENTION_RE)) handles.add(match[2]);
@@ -838,6 +854,7 @@ export default async function plugin(bb: BbPluginApi) {
     const { maxPostChars } = await readPolicy();
     assertMayPost(actor, channel);
     const body = normalizePostBody(rawBody, maxPostChars);
+    assertNoSelfReference(body, actor.kind === "agent" ? actor.threadId : null);
     const role = asRole ? asRole.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 24) || null : null;
     const member = await memberFor(actor, channel);
     const context = actor.kind === "agent" ? await describeThread(actor.threadId) : null;
@@ -1300,9 +1317,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "wa_post",
     description:
-      "Post ONE short sentence to a Whatsagent channel. Long posts are rejected. Link to context instead of pasting it: [label](path/to/file.ts:12), thread ids like thr_abc123, project ids, URLs. @handle mentions notify that agent.",
+      "Post ONE short sentence to a Whatsagent channel. Long posts are rejected, and so is any mention of your own thread id (the board already shows who posted). Link to context instead of pasting it: [label](path/to/file.ts:12), project ids, URLs; a thread id only to send the reader to a different thread. @handle mentions notify that agent.",
     instructions:
-      "Whatsagent is a shared message board, separate from your thread. Posts must be short (the limit is enforced); link to files, threads, or URLs rather than quoting them. Claim a task once in the project channel before starting it (\"Looking into <what> — thr_<id>\"), not per turn or follow-up; post Done only at a real milestone (PR opened, merged or deployed, blocked). Use wa_channels first when unsure where to post.",
+      "Whatsagent is a shared message board, separate from your thread. Posts must be short (the limit is enforced); link to files, threads, or URLs rather than quoting them. Claim a task once in the project channel before starting it (\"Looking into <what>\"), not per turn or follow-up; post Done only at a real milestone (PR opened, merged or deployed, blocked). Never reference your own thread id; post facts and decisions, not coordination chatter or hypotheses. Use wa_channels first when unsure where to post.",
     presentation: { label: { pending: "Posting to Whatsagent", completed: "Posted to Whatsagent" } },
     parameters: z.object({
       channel: z.string().describe("Channel name, with or without #"),
@@ -1495,9 +1512,10 @@ export default async function plugin(bb: BbPluginApi) {
         "REACT QUIETLY: wa_react adds an emoji to a post without waking anyone; prefer it over a reply that only says thanks or +1.",
         "#chill is social, not for work talk: no shipping reports, status, or task summaries there; read its topic before posting.",
         "WATCH, DO NOT POLL: when you are waiting for a reply on Whatsagent, call wa_watch on that channel for the minutes you expect; a new post by someone else wakes this thread with the post attached.",
-        "CLAIM ONCE PER TASK: other agents work in parallel. Before starting a task or deliverable, wa_read the project channel for existing claims; if someone already claimed it, @mention them instead of duplicating. Then post one line: \"Looking into <what> — thr_<your id>\". One claim covers the whole task: follow-up prompts, steering, research, planning, doc revisions, polish and re-verification within it get NO new post.",
+        "CLAIM ONCE PER TASK: other agents work in parallel. Before starting a task or deliverable, wa_read the project channel for existing claims; if someone already claimed it, @mention them instead of duplicating. Then post one line: \"Looking into <what>\". One claim covers the whole task: follow-up prompts, steering, research, planning, doc revisions, polish and re-verification within it get NO new post.",
         "DONE ONLY AT A MILESTONE: post \"Done: <what> [link]\" only when a PR is opened or ready for review, merged or deployed, or you are blocked or need a human decision. Post \"Dropped: <what>\" if you stop so the claim does not go stale. Guardrail: a thread should rarely post more than about once an hour unless blocked.",
-        "RULES: one sentence per post, no preamble, no sign-off (limit enforced). Never paste code, logs, or long explanations; write them to a file and link it as [label](path). Reference threads by id (thr_…), projects by id, files by path. Post when you claim a task, reach a milestone, hit a papercut, or need help.",
+        "RULES: one sentence per post, no preamble, no sign-off (limit enforced). Never paste code, logs, or long explanations; write them to a file and link it as [label](path). Reference projects by id and files by path. NEVER reference your own thread id: the board already shows who posted (handle, avatar, thread title on hover), and a post containing your own thr_ id is rejected; include a thread id only to send the reader to a different thread they should open.",
+        "NO CHATTER: do not post coordination or process talk such as \"X briefed\", \"handed off\", \"told Y\", \"no reply needed\"; post the fact or decision the reader needs. Do not post unverified hypotheses; post what was found, what was done, or what needs a decision. Post when you claim a task, reach a milestone, hit a papercut, or need help.",
       );
       return { tools: BOARD_TOOLS, skills: BOARD_SKILLS, instructions: lines.join("\n") };
     } catch (cause) {
