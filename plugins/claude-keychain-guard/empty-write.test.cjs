@@ -54,13 +54,15 @@ for(const version of installed.filter(v=>VERIFIED_VERSIONS.has(v))){
   const marker=source.lastIndexOf('plaintext_fallback_used');
   const storage=source.slice(source.lastIndexOf('// Version:',marker),marker+9000);
   const older=version==='2.1.261';
-  const composite=slice(storage,older?'function d(e,t,r){':'function d(e,r,n){',older?'var m=2000':'var g=2000');
+  const latest=version==='2.1.273';
+  const current=version==='2.1.274';
+  const composite=slice(storage,older?'function d(e,t,r){':current?'function g(e,r,n){':'function d(e,r,n){',older?'var m=2000':latest?'var f=2000':current?'var p=2000':'var g=2000');
   const at=source.lastIndexOf('tengu_oauth_refresh_token_cleared_on_disk');
   const start=source.lastIndexOf('async function ',at);
   const clear=source.slice(start,source.indexOf('function ',at));
   assert.ok(clear.length<4000);
   const clearName=clear.match(/async function (\w+)\(/)[1];
-  const primaryCode=slice(storage,older?'E={name:"keychain"':'I={name:"keychain"',older?';async function k()':';async function x(e)');
+  const primaryCode=slice(storage,older?'E={name:"keychain"':latest?'N={name:"keychain"':current?'T={name:"keychain"':'I={name:"keychain"',older?';async function k()':latest?';async function b(e)':';async function x(e)');
   function harness(mode){
     const primary={value:fresh(),writes:0,deletes:0,name:'dummy',invalidateCache(){},async readAsync(){return this.value;},async readAsyncStrict(){return this.value;},async delete(){this.deletes++;this.value=null;return true;}};
     const file={...primary,value:{...fresh(),claudeAiOauth:{...fresh().claudeAiOauth,accessToken:'DUMMY-NEW',refreshToken:'DUMMY-NEW-R'}},async update(next){this.writes++;this.value=next;return {success:true};}};
@@ -82,13 +84,17 @@ for(const version of installed.filter(v=>VERIFIED_VERSIONS.has(v))){
       hc:Symbol('failed'),Ha:Symbol('failed'),Vxn:async f=>f(),XBn:async f=>f(),
       y:noop,f:noop,g:2000,i:noop,n:noop,t:noop,l:String,_:noop,p:noop,h:noop,
       DU:()=>cache,Rj:()=>cache,wA:noop,sT:noop,Sx:()=> 'Claude Code-credentials',iH:()=> 'Claude Code-credentials',N5:'',Y7:'',
-      tv:()=> 'andrew',Fw:()=> 'andrew',b:JSON.stringify,Bf:command,Rp:command});
+      tv:()=> 'andrew',Fw:()=> 'andrew',b:JSON.stringify,Bf:command,Rp:command,
+      os:new Set(),Za:Symbol('failed'),W8n:async f=>f(),CW:()=>cache,fk:noop,xP:()=> 'Claude Code-credentials',ZQ:'',XE:()=> 'andrew',w:JSON.stringify,ap:command,
+      Ei:new Set(),al:Symbol('failed'),YZn:async f=>f(),jz:()=>cache,zk:noop,mI:()=> 'Claude Code-credentials',Bee:'',Cv:()=> 'andrew',Tp:command});
     // The older composite calls g for analytics; its timeout is m, not g.
     if(older)ctx.g=noop;
+    if(latest){ctx.f=2000;ctx.m=noop;}
+    if(current){ctx.p=2000;ctx.f=noop;}
     vm.runInContext(composite+'\nvar '+primaryCode+';\n'+clear,ctx);
-    primary.update=next=>(older?ctx.E:ctx.I).update(next);
+    primary.update=next=>(older?ctx.E:latest?ctx.N:current?ctx.T:ctx.I).update(next);
     const combined=older?ctx.v(primary,file):ctx.k(primary,file);
-    ctx[older?'yn':'vn']=()=>combined;
+    ctx[older?'yn':latest?'xn':current?'In':'vn']=()=>combined;
     return {ctx,primary,file,combined,clear:()=>ctx[clearName]('DUMMY-R')};
   }
   test(`${version}: ordinary write refusal overwrites file then deletes primary (unsafe proposal)`,async()=>{

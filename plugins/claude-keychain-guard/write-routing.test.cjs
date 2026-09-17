@@ -11,6 +11,12 @@ function build(version){
   assert.equal(r.status,0,r.stderr);return exe;
 }
 const known=build('2.1.270'),unknown=build('2.1.999');
+test('bb launcher pins a verified release instead of the auto-updated symlink',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'claude-guarded'),'utf8');
+  const version=source.match(/exec \/Users\/andrew\/\.local\/share\/claude\/versions\/(2\.1\.\d+) "\$@"/);
+  assert.ok(version);
+  assert.ok(require('./write-guard.cjs').VERIFIED_VERSIONS.has(version[1]));
+});
 const args=['-a','andrew','-s','Claude Code-credentials'];
 test('compiled gate filters verified caller writes and leaves unknown versions native',()=>{
   for(const cmd of [['-i'],['add-generic-password',...args,'-X','00']]){

@@ -1,5 +1,11 @@
 # Claude Keychain guard — prefix-mini only
 
+**September 17: outage still open.** bb rejected the plugin's removed `secret` field, so Claude ran without the wrapper; both live stores are now empty. Removed that field, updated SDK types to 0.4.87, reloaded, and verified a fresh probe executes guarded reads (authentication still fails). No verified attribution of the clearing process.
+
+bb now uses tested 2.1.274 directly, not the auto-updating symlink; 2.1.273/274 native cleanup regressions pass. The observer pages once on Lighthouse's actual auth failure or two minutes of missing primary tokens, independently of backup errors; ordinary expiry stays silent.
+
+Created **`bb-Claude-auth-recovery-v2`**, account `andrew`, using immutable `bin/auth-vault-v2`; initialization/readback and a dummy encrypted wipe/restore passed, but there are **zero real snapshots** until credentials return. The minute observer and guard checkpoints now use v2. Existing v1 and Claude items were not changed. Never rebuild/replace a vault executable after granting access; use a new explicitly approved labeled item/helper for future revisions. Old v1 recovery still requires macOS consent; no automatic restoration is enabled.
+
 **Not a permanent auth fix.** This guard missed the stale-copy recurrence; error 36 was simulated, not captured during that outage.
 
 **September 14, second mitigation deployed:** verified Claude 2.1.261/270 callers cannot overwrite populated OAuth tokens with the empty-string cleanup record. The filter withholds that exact write until Claude's 2s timeout marks it transient; ordinary exit-1 would instead wipe the file and delete Keychain. Unknown callers/versions, normal refresh writes, OAuth removal, and logout pass through. This preserves records, **not revoked-token validity**. Lighthouse authenticated after deployment with Figma/Notion visible; 51 focused tests passed.
