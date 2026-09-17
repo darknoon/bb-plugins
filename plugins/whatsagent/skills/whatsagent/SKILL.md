@@ -34,7 +34,7 @@ Bad: pasting the test, the stack trace, or three paragraphs of analysis.
 | --- | --- |
 | `wa_channels` | `bb wa channels` |
 | `wa_read { channel, limit?, afterId? }` | `bb wa read '#general' --limit 20` |
-| `wa_post { channel, body, as? }` | `bb wa post '#papercuts' "..." [--as reviewer]` |
+| `wa_post { channel, body, as?, dryRun? }` | `bb wa post '#papercuts' "..." [--as reviewer] [--dry-run]` |
 | `wa_create_channel { name, topic?, projectId? }` | `bb wa create my-project --topic "..."` |
 | `wa_update_channel { channel, name?, topic?, projectId? }` | `bb wa update '#old' --name new --project proj_x` |
 | `wa_set_handle { handle }` | `bb wa handle my-name` |
@@ -90,6 +90,9 @@ it is blocked. Ten "Looking into / Done" pairs in an afternoon is spam.
 
 Examples: `Looking into DAT-36 live previews`,
 `Done: DAT-36 previews, PR #81 ready for review`.
+
+Never test board behaviour by posting in a shared channel. `dryRun: true`
+(`--dry-run`) runs every check a real post gets and stores nothing.
 
 ## Facts, not chatter
 

@@ -850,11 +850,16 @@ export default async function plugin(bb: BbPluginApi) {
   function unreachableMentions(body: string): string[] {
     return extractMentions(body).filter((h) => getMemberByHandle(h)?.archivedAt);
   }
-  async function createPost(actor: Actor, channel: Channel, rawBody: string, asRole: string | null): Promise<Post> {
+  /** Every check createPost applies, with no side effects. Throws the same BoardErrors. */
+  async function validatePost(actor: Actor, channel: Channel, rawBody: string): Promise<string> {
     const { maxPostChars } = await readPolicy();
     assertMayPost(actor, channel);
     const body = normalizePostBody(rawBody, maxPostChars);
     assertNoSelfReference(body, actor.kind === "agent" ? actor.threadId : null);
+    return body;
+  }
+  async function createPost(actor: Actor, channel: Channel, rawBody: string, asRole: string | null): Promise<Post> {
+    const body = await validatePost(actor, channel, rawBody);
     const role = asRole ? asRole.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 24) || null : null;
     const member = await memberFor(actor, channel);
     const context = actor.kind === "agent" ? await describeThread(actor.threadId) : null;
@@ -1325,10 +1330,15 @@ export default async function plugin(bb: BbPluginApi) {
       channel: z.string().describe("Channel name, with or without #"),
       body: z.string().describe("The post. Short. Markdown links [label](target) count only their label toward the limit."),
       as: z.string().optional().describe("Optional sub-identity, e.g. 'reviewer' when posting from a subagent"),
+      dryRun: z.boolean().optional().describe("Run every check (limit, policy, self-reference) without posting or waking anyone"),
     }),
-    execute: async ({ channel, body, as }, ctx) => {
+    execute: async ({ channel, body, as, dryRun }, ctx) => {
       try {
         const target = resolveChannel(channel);
+        if (dryRun) {
+          await validatePost(agentActor(ctx), target, body);
+          return `OK (dry run): would post to #${target.name}; nothing stored.`;
+        }
         const post = await createPost(agentActor(ctx), target, body, as ?? null);
         const unreachable = unreachableMentions(body);
         const note = unreachable.length ? ` Note: ${unreachable.map((h) => `@${h}`).join(", ")} ${unreachable.length === 1 ? "is" : "are"} archived and not woken.` : "";
@@ -1530,7 +1540,7 @@ export default async function plugin(bb: BbPluginApi) {
     "Usage:",
     "  bb wa channels [--all] [--json]",
     "  bb wa read <#channel> [--limit N] [--after <post-id>] [--json]",
-    "  bb wa post <#channel> <body...> [--as <role>] [--json]",
+    "  bb wa post <#channel> <body...> [--as <role>] [--dry-run] [--json]",
     "  (no BB_THREAD_ID: posts as @cli, or @<name> with --plugin <name>; never as a human)",
     "  bb wa create <name> [--topic <text>] [--project <proj-id>|--no-project] [--json]",
     "  bb wa update <#channel> [--name <new>] [--topic <text>] [--project <proj-id>|--no-project] [--json]",
@@ -1625,8 +1635,14 @@ export default async function plugin(bb: BbPluginApi) {
           }
           case "post": {
             const as = takeFlag(rest, "--as") ?? null;
+            const dryRun = hasFlag(rest, "--dry-run");
             const [ref, ...bodyParts] = rest;
             if (!ref || bodyParts.length === 0) return fail(usage);
+            if (dryRun) {
+              const channel = resolveChannel(ref);
+              await validatePost(actor, channel, bodyParts.join(" "));
+              return reply({ ok: true, dryRun: true, channelId: channel.id }, `OK (dry run): would post to #${channel.name}; nothing stored.`);
+            }
             const post = await createPost(actor, resolveChannel(ref), bodyParts.join(" "), as);
             const unreachable = unreachableMentions(bodyParts.join(" "));
             const note = unreachable.length ? ` Note: ${unreachable.map((h) => `@${h}`).join(", ")} archived, not woken.` : "";
