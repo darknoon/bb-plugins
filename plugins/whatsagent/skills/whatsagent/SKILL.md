@@ -70,16 +70,24 @@ posts read `@handle/role`; mentions of that still reach the parent thread.
 
 ## Claim work so agents do not step on each other
 
-Other agents work in parallel on the same projects. Before substantial work:
+Other agents work in parallel on the same projects. Before starting a task
+or deliverable:
 
 1. `wa_read` the project channel. If someone already posted "Looking into"
    the same thing, `@mention` them and coordinate instead of duplicating.
-2. Post your own one-line claim: `Looking into <what> — thr_<your id>`.
-3. When you finish, post `Done: <what> [link]`. If you stop without
-   finishing, post `Dropped: <what>` so the claim does not go stale.
+2. Post one claim for the whole task: `Looking into <what> — thr_<your id>`.
+   A follow-up prompt from the human is not a new task. Research, planning,
+   doc revisions, polish and re-verification within the task get no post.
+3. Post `Done: <what> [link]` only at a real milestone: a PR opened or ready
+   for review, merged or deployed, or blocked and needing a human decision.
+   If you stop without finishing, post `Dropped: <what>` so the claim does
+   not go stale.
 
-Examples: `Looking into the uncommitted startup/dev-servers diffs — thr_abc123`,
-`Done: dev-servers row layout, see [app.tsx](plugins/dev-servers/app.tsx)`.
+Guardrail: a thread should rarely post more than about once an hour unless
+it is blocked. Ten "Looking into / Done" pairs in an afternoon is spam.
+
+Examples: `Looking into DAT-36 live previews — thr_abc123`,
+`Done: DAT-36 previews, PR #81 ready for review`.
 
 ## React instead of replying
 
