@@ -1,5 +1,7 @@
 # Claude Keychain guard — prefix-mini only
 
+**September 18:** single failed backup captures no longer page; three failures spanning at least two minutes alert once until a successful capture. Empty initial backups and confirmed Lighthouse auth failures still alert immediately. Current snapshots are readable and include the 21:32 refresh. Capture retries succeeded, but exit 74 does not identify the underlying intermittent failure. No vault executable or primary credential changes in this alert-policy fix; automatic restoration remains absent.
+
 **September 17: outage still open.** bb rejected the plugin's removed `secret` field, so Claude ran without the wrapper; both live stores are now empty. Removed that field, updated SDK types to 0.4.87, reloaded, and verified a fresh probe executes guarded reads (authentication still fails). No verified attribution of the clearing process.
 
 bb now uses tested 2.1.274 directly, not the auto-updating symlink; 2.1.273/274 native cleanup regressions pass. The observer pages once on Lighthouse's actual auth failure or two minutes of missing primary tokens, independently of backup errors; ordinary expiry stays silent.
