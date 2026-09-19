@@ -47,7 +47,7 @@ test('populated divergent stores are classified without assuming either token in
   assert.equal(classify({...good,sameOAuth:false},now),'stores-differ');
 });
 test('healthy unchanged tick stays silent',()=>{
-  assert.deepEqual(decide({snapshot:good,condition:'ok'},good,now),{condition:'ok',conditionSince:now,divergenceSince:null,alertKey:null,changed:false,alert:false});
+  assert.deepEqual(decide({snapshot:good,condition:'ok'},good,now),{condition:'ok',conditionSince:now,divergenceSince:null,backupFailureSince:null,backupFailureCount:0,alertKey:null,changed:false,alert:false});
 });
 test('expiry crossing is noticed even without storage changes',()=>{
   const result = decide({snapshot:good,condition:'ok'},good,now+100001);
@@ -126,13 +126,56 @@ test('old observer expiry state migrates silently',()=>{
   const result=decide({snapshot,condition:'keychain-expired',alertKey:'keychain-expired',conditionSince:0},snapshot,now);
   assert.equal(result.alert,false);assert.equal(result.alertKey,null);
 });
-test('backup capture failure alerts once and normal capture resets it',()=>{
+test('backup capture failure needs three failures over two minutes, alerts once, then resets',()=>{
   const snapshot={...good,backup:{exitCode:74,timedOut:false}};
   const first=decide(null,snapshot,now);
-  assert.equal(first.alert,true);assert.equal(first.alertKey,'encrypted-backup-failed');
-  assert.equal(decide({...first,snapshot},snapshot,now+1).alert,false);
+  assert.equal(first.alert,false);
+  const second=decide({...first,snapshot},snapshot,now+60000);
+  assert.equal(second.alert,false);
+  const third=decide({...second,snapshot},snapshot,now+120000);
+  assert.equal(third.alert,true);assert.equal(third.alertKey,'encrypted-backup-failed');
+  assert.equal(decide({...third,snapshot},snapshot,now+180000).alert,false);
   const healthy={...good,backup:{exitCode:0,timedOut:false}};
-  assert.equal(decide({...first,snapshot},healthy,now+2).alert,false);
+  const reset=decide({...third,snapshot},healthy,now+180000);
+  assert.equal(reset.alert,false);assert.equal(reset.backupFailureSince,null);assert.equal(reset.backupFailureCount,0);
+  assert.equal(decide({...reset,snapshot:healthy},snapshot,now+240000).alert,false);
+});
+test('isolated capture errors and timeouts never page when the next tick succeeds',()=>{
+  const healthy={...good,backup:{exitCode:0,timedOut:false}};
+  let previous=null;
+  for(let i=0;i<10;i++){
+    const snapshot={...good,backup:i%2?{exitCode:null,timedOut:true}:{exitCode:74,timedOut:false}};
+    const bad=decide(previous,snapshot,now+i*120000);
+    assert.equal(bad.alert,false);
+    const recovery=decide({...bad,snapshot},healthy,now+i*120000+60000);
+    assert.equal(recovery.alert,false);
+    previous={...recovery,snapshot:healthy};
+  }
+});
+test('three rapid failures cannot bypass the minimum duration',()=>{
+  const snapshot={...good,backup:{exitCode:74}};
+  let previous=null;
+  for(let i=0;i<5;i++){
+    const result=decide(previous,snapshot,now+i);
+    assert.equal(result.alert,false);
+    previous={...result,snapshot};
+  }
+  assert.equal(decide(previous,snapshot,now+120000).alert,true);
+});
+test('a long gap with only two failures does not satisfy three attempts',()=>{
+  const snapshot={...good,backup:{exitCode:74}};
+  const first=decide(null,snapshot,now);
+  assert.equal(decide({...first,snapshot},snapshot,now+3600000).alert,false);
+});
+test('already announced backup failure stays latched through migration',()=>{
+  const snapshot={...good,backup:{exitCode:74}};
+  const result=decide({snapshot,alertKey:'encrypted-backup-failed'},snapshot,now);
+  assert.equal(result.alert,false);assert.equal(result.alertKey,'encrypted-backup-failed');
+});
+test('transient backup errors cannot hide sustained credential divergence',()=>{
+  const snapshot={...newerFile(),backup:{exitCode:74}};
+  const result=decide({divergenceSince:now-REFRESH_CYCLE_MS},snapshot,now);
+  assert.equal(result.alert,true);assert.equal(result.alertKey,'credential-divergence-persisted');
 });
 test('empty initial backup is explicitly not ready, never reported protected',()=>{
   const result=decide(null,{...good,backup:{exitCode:78,timedOut:false}},now);

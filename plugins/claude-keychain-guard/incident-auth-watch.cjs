@@ -59,10 +59,17 @@ function decide(previous, snapshot, now) {
     && (!completePrimary || !staleFile);
   const divergenceSince = divergent ? (previous?.divergenceSince ?? now) : null;
   const backupFailed = snapshot.backup && snapshot.backup.exitCode !== 0;
-  const alertKey = backupFailed ? (snapshot.backup.exitCode === 78 ? 'encrypted-backup-not-ready' : 'encrypted-backup-failed') : divergent && now - divergenceSince >= REFRESH_CYCLE_MS ? 'credential-divergence-persisted' : null;
+  // A single failed bounded capture is not a sustained loss of backup coverage.
+  // Keep every result in the log; do not replace the trusted vault executable.
+  const backupFailureSince = backupFailed ? (previous?.backupFailureSince ?? now) : null;
+  const backupFailureCount = backupFailed ? Math.min((previous?.backupFailureCount ?? 0) + 1, 3) : 0;
+  const sustainedBackupFailure = backupFailed && backupFailureCount >= 3 && now - backupFailureSince >= 120000;
+  const backupAlertKey = backupFailed && snapshot.backup.exitCode === 78 ? 'encrypted-backup-not-ready'
+    : backupFailed && (sustainedBackupFailure || previous?.alertKey === 'encrypted-backup-failed') ? 'encrypted-backup-failed' : null;
+  const alertKey = backupAlertKey || (divergent && now - divergenceSince >= REFRESH_CYCLE_MS ? 'credential-divergence-persisted' : null);
   const alert = alertKey !== null && alertKey !== previous?.alertKey;
   // Read failures, expiry and guard interventions remain metadata, not pages.
-  return {condition, conditionSince, divergenceSince, alertKey, changed, alert};
+  return {condition, conditionSince, divergenceSince, backupFailureSince, backupFailureCount, alertKey, changed, alert};
 }
 function observe() {
   const capture = cp.spawnSync(VAULT, ['checkpoint'], {encoding:'utf8',timeout:2000});
@@ -152,12 +159,12 @@ async function main() {
     const body = decision.alertKey === 'encrypted-backup-not-ready'
       ? '@codex-rvbx encrypted auth backup is not ready: no tokens available to capture; primary credentials unchanged.'
       : decision.alertKey === 'encrypted-backup-failed'
-      ? '@codex-rvbx encrypted auth backup failed; inspect capture before relying on recovery—primary credentials unchanged.'
+      ? '@codex-rvbx encrypted backup capture failed repeatedly for 2m; inspect before relying on recovery—primary credentials unchanged.'
       : '@codex-rvbx auth observer: credential divergence persisted for 8h on mini; inspect before recovery—primary credentials unchanged.';
     await postAlert(body);
     lastAlertAt = now;
   }
-  const next = {snapshot,unavailableSince:outage.unavailableSince,outageNotified:outage.outageNotified,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,alertKey:decision.alertKey,lastAlertAt,repeatedBlocks:{notified:repeatedBlocks.notified},checkedAt:new Date(now).toISOString()};
+  const next = {snapshot,unavailableSince:outage.unavailableSince,outageNotified:outage.outageNotified,condition:decision.condition,conditionSince:decision.conditionSince,divergenceSince:decision.divergenceSince,backupFailureSince:decision.backupFailureSince,backupFailureCount:decision.backupFailureCount,alertKey:decision.alertKey,lastAlertAt,repeatedBlocks:{notified:repeatedBlocks.notified},checkedAt:new Date(now).toISOString()};
   const pending = path.join(DIRECTORY,'state.next.json');
   fs.writeFileSync(pending,JSON.stringify(next)+'\n',{mode:0o600});
   fs.renameSync(pending,statePath);
