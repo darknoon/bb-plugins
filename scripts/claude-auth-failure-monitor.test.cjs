@@ -1,6 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {observe,tick,canary,post}=require('./claude-auth-failure-monitor.cjs');
+const {observe,providerFailure,tick,canary,post}=require('./claude-auth-failure-monitor.cjs');
+const {spawnSync}=require('node:child_process');
 function fake(status,log=''){
  const calls=[];
  return {calls,env:{BB_CLI:'/dummy/bb'},spawn:(exe,args)=>{
@@ -13,6 +14,20 @@ test('health checks execute only bb thread reads, no credential helpers',()=>{
   const io=fake(state,log);assert.equal(observe(io),want);
   assert.ok(io.calls.every(a=>a[0]==='thread'&&['show','log'].includes(a[1])));
  }
+});
+test('matches provider authentication and model version errors, not arbitrary HTTP/tool failures',()=>{
+ for(const line of ['authentication_error: invalid token','OAuth refresh failed','invalid_grant','API Error: 401 Unauthorized','Anthropic request failed: HTTP 401','HTTP 400: model requires Claude Code 2.1.280 or newer','API Error: 400 unsupported model'])assert.equal(providerFailure(line),true,line);
+ for(const line of ['Tool error: HTTP 401','curl returned HTTP 400','Tool result: authentication failed','HTTP 400: invalid input','API Error: 429 rate limited','Build failed'])assert.equal(providerFailure(line),false,line);
+});
+test('repeated unavailable or malformed bb reads stay unknown and do not throw',()=>{
+ for(let i=0;i<4;i++){
+  assert.equal(observe({spawn:()=>({status:1,stdout:''})}),null);
+  assert.equal(observe({spawn:()=>({status:0,stdout:'not-json'})}),null);
+ }
+});
+test('CLI observation failure exits zero so scheduler will not pause detection',()=>{
+ const run=spawnSync(process.execPath,[require.resolve('./claude-auth-failure-monitor.cjs'),'--check'],{env:{...process.env,BB_CLI:'/nonexistent-bb-monitor-test'},encoding:'utf8'});
+ assert.equal(run.status,0);assert.equal(run.stderr,'');assert.equal(JSON.parse(run.stdout).lighthouseAuthFailed,null);
 });
 test('healthy ticks are silent and sustained outage sends one board alert and one canary',async()=>{
  let previous,posts=0,checks=0;
