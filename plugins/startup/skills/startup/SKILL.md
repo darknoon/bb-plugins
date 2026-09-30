@@ -23,7 +23,8 @@ handoff. If any turns are running, it lists them and requires an explicit
 - `bb startup disable` schedules launchd unload and removes only files carrying
   the plugin's ownership marker.
 
-Startup is deliberately login-time rather than pre-login: provider credentials
-stored in the macOS login keychain are available after login. The managed
+Startup is deliberately login-time rather than pre-login. It does not probe
+provider credentials or establish that Keychain access works; a real provider
+request must verify authentication separately. The managed
 command is always `bb-app@latest`. Report that a FileVault reboot still needs a
 disk unlock and a macOS login before this user LaunchAgent can run.
