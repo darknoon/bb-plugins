@@ -19,7 +19,7 @@ function words(line){
   if(quote)return null;if(started)out.push(word);return out;
 }
 function inspect(args){
-  if(args?.[0]!=='add-generic-password')return null;
+  if(args?.[0]!=='add-generic-password'||!args.includes('-U'))return null;
   let account,service,value,encoding;const paths=[];
   for(let i=1;i<args.length;i++){
     const k=args[i];
