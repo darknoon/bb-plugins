@@ -1,0 +1,23 @@
+{
+  "name": "bb-plugin-claude-keychain-guard",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.42",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Claude Keychain Guard",
+    "description": "Treat a denied Claude Keychain read as an error, not a missing credential.",
+    "branding": {
+      "icon": "Shield"
+    },
+    "server": "./server.ts",
+    "skills": []
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.5.29",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
