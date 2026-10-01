@@ -16,7 +16,7 @@
     "skills": []
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.87",
+    "@get-bb/plugin-sdk": "0.5.29",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   }

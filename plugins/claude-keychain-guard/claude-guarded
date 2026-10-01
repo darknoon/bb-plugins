@@ -1,6 +1,11 @@
 #!/bin/sh
 # Scope the compatibility shim to this Claude process and its children.
-# Pin bb to a tested release so a CLI auto-update cannot bypass the version gate.
-PATH="/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin:$PATH"
+# Resolve once, at launch. Do not pin a removed CLI or change existing sessions.
+set -eu
+guard_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+target=$(/opt/homebrew/bin/node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' /Users/andrew/.local/bin/claude)
+test -x "$target" || { echo 'Claude executable is unavailable' >&2; exit 126; }
+test "$target" != "$guard_dir/claude-guarded" || exit 126
+PATH="$guard_dir/bin:$PATH"
 export PATH
-exec /Users/andrew/.local/share/claude/versions/2.1.274 "$@"
+exec "$target" "$@"

@@ -39,7 +39,7 @@ function slice(source,a,b){const p=source.indexOf(a),q=source.indexOf(b,p+a.leng
 const installed=fs.readdirSync('/Users/andrew/.local/share/claude/versions').filter(s=>/^2\.1\.\d+$/.test(s));
 test('every installed Claude version requires explicit review or exclusion',()=>{
   // Retained old release: intentionally unguarded, not a claimed supported version.
-  const excluded=new Set(['2.1.258']);
+  const excluded=new Set(['2.1.258','2.1.280','2.1.284']);
   for(const version of installed)assert.ok(VERIFIED_VERSIONS.has(version)||excluded.has(version),`Unverified installed version ${version}: guard must remain off for this caller`);
 });
 test('unknown callers delegate without inspecting, rejecting, or delaying their write',async()=>{
@@ -49,7 +49,8 @@ test('unknown callers delegate without inspecting, rejecting, or delaying their 
     assert.equal(delegated,1);
   }
 });
-for(const version of installed.filter(v=>VERIFIED_VERSIONS.has(v))){
+// 2.1.285 changed mutate/cleanup signatures; its extracted-code suite is separate.
+for(const version of installed.filter(v=>VERIFIED_VERSIONS.has(v)&&v!=='2.1.285')){
   const source=fs.readFileSync(`/Users/andrew/.local/share/claude/versions/${version}`,'utf8');
   const marker=source.lastIndexOf('plaintext_fallback_used');
   const storage=source.slice(source.lastIndexOf('// Version:',marker),marker+9000);

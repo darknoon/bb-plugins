@@ -1,11 +1,11 @@
 #!/opt/homebrew/bin/node
 'use strict';
-// Scope: Claude 2.1.261/270's empty-string invalid_grant cleanup, not logout.
+// Scope: extracted, tested native cleanup paths, including 2.1.285; not logout.
 // Never report ordinary failure for this write: native fallback would erase both stores.
 const fs=require('node:fs');
 const cp=require('node:child_process');
 const LIMIT=1024*1024;
-const VERIFIED_VERSIONS=new Set(['2.1.261','2.1.270','2.1.273','2.1.274']);
+const VERIFIED_VERSIONS=new Set(['2.1.261','2.1.270','2.1.273','2.1.274','2.1.285']);
 function words(line){
   const out=[];let word='',quote=null,started=false;
   for(let i=0;i<line.length;i++){
@@ -55,7 +55,7 @@ function decision(args,input,readPrimary){
       const primary=readPrimary(info.paths);
       const o=primary?.claudeAiOauth;
       if(primary===undefined || (typeof o?.accessToken==='string'&&o.accessToken.length>0&&typeof o?.refreshToken==='string'&&o.refreshToken.length>0))
-        return {block:true,payloadHasTokens:false,primaryReadable:primary!==undefined};
+        return {block:true,payloadHasTokens:false,primaryReadable:primary!==undefined,primaryHadTokens:primary!==undefined};
     }
   }
   const mentionsClaude=args.join(' ').includes('Claude Code-credentials') || input?.includes('Claude Code-credentials');
@@ -69,7 +69,7 @@ function log(result){
     const s=fs.fstatSync(fd);if(!s.isFile()||s.uid!==process.getuid()||(s.mode&0o077)||s.size>20*1024*1024)return;
     fs.writeSync(fd,JSON.stringify({atMs:Date.now(),pid:process.pid,parentPid:process.ppid,operation:'write-policy',
       decision:result.block?'blocked-empty-token-write':result.uninspected?'uninspected-claude-credential-write':'allow',payloadHasTokens:result.payloadHasTokens,
-      ...(result.block?{primaryReadable:result.primaryReadable}:{})})+'\n');
+      ...(result.block?{primaryReadable:result.primaryReadable,primaryHadTokens:result.primaryHadTokens}:{})})+'\n');
   }catch{}finally{if(fd!==undefined)fs.closeSync(fd);}
 }
 async function filter({args,input,version,readPrimary,recordDecision=()=>{},delegate}){
@@ -77,7 +77,7 @@ async function filter({args,input,version,readPrimary,recordDecision=()=>{},dele
   const result=decision(args,input,readPrimary);
   if(result.block||result.inspected||result.uninspected)recordDecision(result);
   if(result.block){
-    // Both extracted native versions time out at 2000ms and mark the result transient.
+    // Every verified native version times out at 2000ms and marks it transient.
     // Do not delegate, fake success, substitute tokens, or touch either credential store.
     await new Promise(r=>setTimeout(r,3000));return 1;
   }

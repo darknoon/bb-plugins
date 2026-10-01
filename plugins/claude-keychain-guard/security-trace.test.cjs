@@ -1,4 +1,4 @@
-const {test,after}=require('node:test');
+const {test,after,beforeEach}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
@@ -13,6 +13,7 @@ const build=spawnSync('clang',['-Wall','-Wextra','-Werror',`-DBB_SECURITY_EXECUT
 assert.equal(build.status,0,build.stderr);
 const args=['find-generic-password','-a','andrew','-s','Claude Code-credentials'];
 const log=()=>fs.readFileSync(path.join(dir,'security-operations.jsonl'),'utf8');
+beforeEach(()=>fs.rmSync(path.join(dir,'read-cooldown'),{force:true}));
 test('native delegate preserves transport output but records only metadata',()=>{
   const result=spawnSync(exe,args,{encoding:'utf8'});
   assert.equal(result.status,0);
@@ -30,6 +31,9 @@ test('denied read records original exit and mapping without credential contents'
   assert.equal(result.status,1);
   const record=JSON.parse(log().trim().split('\n').at(-1));
   assert.equal(record.originalExit,36); assert.equal(record.returnedExit,1);
+  const second=spawnSync(exe,args,{encoding:'utf8'});
+  assert.equal(second.status,1);assert.equal(second.stdout,'');
+  assert.equal(JSON.parse(log().trim().split('\n').at(-1)).phase,'backoff');
 });
 test('failed interactive write is visible and its exit is not rewritten',()=>{
   const result=spawnSync(exe,['-i'],{env:{...process.env,DUMMY_EXIT:'36'},input:'DUMMY-CREDENTIAL-STDIN'});
@@ -39,15 +43,19 @@ test('failed interactive write is visible and its exit is not rewritten',()=>{
   assert.equal(record.originalExit,36); assert.equal(record.returnedExit,36);
   assert.ok(!log().includes('DUMMY'));
 });
-test('write commands checkpoint encrypted history before and after the delegate',()=>{
+test('write commands never launch retired backup capture',()=>{
   const before=log().trim().split('\n').length;
   const result=spawnSync(exe,['-i'],{input:'DUMMY-PRIVATE',encoding:'utf8'});
   assert.equal(result.status,0);
   const records=log().trim().split('\n').slice(before).map(JSON.parse);
-  assert.equal(records[0].operation,'backup');assert.equal(records[0].phase,'before-write');
-  assert.equal(records.at(-1).operation,'backup');assert.equal(records.at(-1).phase,'after-write');
-  assert.ok(records.filter(r=>r.operation==='backup').every(r=>r.originalExit===0));
+  assert.equal(records.filter(r=>r.operation==='backup').length,0);
   assert.ok(!JSON.stringify(records).includes('DUMMY'));
+});
+test('hung exact-item reads stop within the bound and return failure, not absence',()=>{
+  const start=Date.now();
+  const result=spawnSync(exe,args,{env:{...process.env,DUMMY_SLEEP:'30'},timeout:4000});
+  assert.equal(result.status,1);assert.ok(Date.now()-start<3500);
+  assert.equal(JSON.parse(log().trim().split('\n').at(-1)).phase,'timeout');
 });
 test('unrelated commands pass through without trace records',()=>{
   const before=log();
