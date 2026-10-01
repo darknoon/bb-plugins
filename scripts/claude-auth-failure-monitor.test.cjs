@@ -1,6 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {observe,providerFailure,tick,canary,post}=require('./claude-auth-failure-monitor.cjs');
+const {observe,providerFailure,tick,canary,post,intervention,readInterventions}=require('./claude-auth-failure-monitor.cjs');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {spawnSync}=require('node:child_process');
 function fake(status,log=''){
  const calls=[];
@@ -53,4 +54,21 @@ test('board alert uses plugin identity and refuses redirects',async()=>{
   assert.equal(new URL(url).pathname,'/api/v1/plugins/whatsagent/http/post');
   assert.equal(options.redirect,'error');assert.equal(JSON.parse(options.body).plugin,'claude-auth-observer');return {ok:true};
  }};await post(io);
+});
+test('shim alarms classify only fixed metadata, not credential contents',()=>{
+ assert.equal(intervention({operation:'write-policy',decision:'blocked-empty-token-write'}),'empty-write-withheld');
+ assert.equal(intervention({operation:'read',originalExit:36,returnedExit:1}),'denied-read-remapped');
+ assert.equal(intervention({operation:'read',phase:'unverified-caller'}),'caller-unverified');
+ assert.equal(intervention({operation:'read',phase:'timeout'}),'read-timed-out');
+ assert.equal(intervention({operation:'read',originalExit:0,returnedExit:0}),null);
+});
+test('metadata tail skips history on first install and handles append/rotation without Keychain reads',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'guard-monitor-')),file=path.join(dir,'trace');
+ try{
+  const line=JSON.stringify({operation:'write-policy',decision:'blocked-empty-token-write'})+'\n';
+  fs.writeFileSync(file,line);const baseline=readInterventions({},file);assert.deepEqual(baseline.reasons,[]);
+  fs.appendFileSync(file,line);const next=readInterventions(baseline,file);assert.deepEqual(next.reasons,['empty-write-withheld']);
+  assert.deepEqual(readInterventions(next,file).reasons,[]);
+  fs.unlinkSync(file);fs.writeFileSync(file,line);assert.deepEqual(readInterventions(next,file).reasons,['empty-write-withheld']);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
