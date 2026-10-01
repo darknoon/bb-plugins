@@ -1,5 +1,9 @@
 # Claude Keychain guard — prefix-mini only
 
+**October 1 review candidate — not deployed.** The current instructions and limitations are in [RUNBOOK.md](RUNBOOK.md). It replaces the removed `.274` pin with a per-launch resolution of the current Claude symlink, verifies `.285`'s native cleanup/read paths, bounds reads with a 30-second failure backoff, and retires backup checkpoints. The SDK is now 0.5.29. Read selection remains disabled. Merge/review and a no-prompt live canary are required before claiming protection.
+
+Everything below is a **historical incident journal**, not current configuration or deployment instructions. In particular, do not run the old backup/install commands below.
+
 **September 18:** single failed backup captures no longer page; three failures spanning at least two minutes alert once until a successful capture. Empty initial backups and confirmed Lighthouse auth failures still alert immediately. Current snapshots are readable and include the 21:32 refresh. Capture retries succeeded, but exit 74 does not identify the underlying intermittent failure. No vault executable or primary credential changes in this alert-policy fix; automatic restoration remains absent.
 
 **September 17: outage still open.** bb rejected the plugin's removed `secret` field, so Claude ran without the wrapper; both live stores are now empty. Removed that field, updated SDK types to 0.4.87, reloaded, and verified a fresh probe executes guarded reads (authentication still fails). No verified attribution of the clearing process.

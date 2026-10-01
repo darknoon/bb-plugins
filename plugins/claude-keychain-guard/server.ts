@@ -6,7 +6,7 @@ const HOST = 'host_5e5sg5gdn4';
 const WRAPPER = '/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/claude-guarded';
 export function contributions(context: ExperimentalPluginProviderEnvContext, allThreads: boolean, canaryThread: string): ExperimentalPluginProviderEnvEntry[] {
   if (context.hostId !== HOST || (!allThreads && context.threadId !== canaryThread)) return [];
-  return [{name:'BB_CLAUDE_CODE_EXECUTABLE',value:WRAPPER,reason:'Classify denied Claude Keychain reads as errors; preserve other auth behavior'}];
+  return [{name:'BB_CLAUDE_CODE_EXECUTABLE',value:WRAPPER,reason:'Current Claude launcher with tested empty-write protection and bounded Keychain reads'}];
 }
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({

@@ -22,9 +22,6 @@
 #ifndef BB_ENABLE_READ_SELECTOR
 #define BB_ENABLE_READ_SELECTOR 0
 #endif
-#ifndef BB_AUTH_VAULT
-#define BB_AUTH_VAULT "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/bin/auth-vault-v2"
-#endif
 #ifndef BB_WRITE_GUARD
 #define BB_WRITE_GUARD "/Users/andrew/Developer/bb-plugins/plugins/claude-keychain-guard/write-guard.cjs"
 #endif
@@ -66,26 +63,17 @@ static void trace(const char *op, const char *phase, int child_pid, int original
     close(fd);
 }
 static volatile sig_atomic_t child = -1;
-static void forward_signal(int sig) { if (child > 0) kill(child, sig); }
-static void checkpoint(const char *phase) {
-    long long start=millis(CLOCK_MONOTONIC);
-    pid_t backup=fork();
-    if(backup<0){trace("backup",phase,-1,1,1,0);return;}
-    if(backup==0){
-        int nullfd=open("/dev/null",O_RDWR);
-        if(nullfd<0)_exit(1);
-        dup2(nullfd,0);dup2(nullfd,1);dup2(nullfd,2);if(nullfd>2)close(nullfd);
-        execl(BB_AUTH_VAULT,BB_AUTH_VAULT,"checkpoint",(char*)NULL);_exit(127);
-    }
-    int status=0,result=1;
-    while(1){
-        pid_t done=waitpid(backup,&status,WNOHANG);
-        if(done==backup){result=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);break;}
-        if(done<0&&errno!=EINTR)break;
-        if(millis(CLOCK_MONOTONIC)-start>=350){kill(backup,SIGKILL);while(waitpid(backup,&status,0)<0&&errno==EINTR){}result=124;break;}
-        struct timespec delay={0,1000000};nanosleep(&delay,NULL);
-    }
-    trace("backup",phase,backup,result,result,millis(CLOCK_MONOTONIC)-start);
+static void forward_signal(int sig) { if (child > 0) { kill(-child, sig); kill(child, sig); } }
+static int read_cooldown(int mark) {
+    int flags=mark ? O_WRONLY|O_CREAT|O_TRUNC : O_RDONLY;
+    int fd=open(BB_AUTH_LOG_DIRECTORY "/read-cooldown",flags|O_NOFOLLOW|O_NONBLOCK,0600);
+    if(fd<0)return 0;
+    struct stat st;
+    if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_uid!=getuid()||(st.st_mode&077)){close(fd);return 0;}
+    long long until=0;
+    if(mark){until=millis(CLOCK_REALTIME)+30000;dprintf(fd,"%lld",until);}
+    else {char buf[32]={0};if(read(fd,buf,sizeof(buf)-1)>0)until=atoll(buf);}
+    close(fd);return until>millis(CLOCK_REALTIME) && until<=millis(CLOCK_REALTIME)+31000;
 }
 int main(int argc, char **argv) {
     const char *op = operation(argc, argv);
@@ -98,13 +86,16 @@ int main(int argc, char **argv) {
 #endif
     const char *version=verified_caller(caller);
     int filtered=BB_ENABLE_WRITE_GUARD && version && op && (!strcmp(op,"write") || (!strcmp(op,"interactive-write") && !isatty(0)));
-    if(BB_ENABLE_WRITE_GUARD && !version && op && strcmp(op,"read"))trace(op,"unverified-caller",-1,-1,-1,0);
+    int bounded=op && (strcmp(op,"interactive-write") || filtered);
+    if(BB_ENABLE_WRITE_GUARD && !version && op)trace(op,"unverified-caller",-1,-1,-1,0);
+    if(op && !strcmp(op,"read") && read_cooldown(0)){
+        trace(op,"backoff",-1,-1,1,0);return 1;
+    }
     signal(SIGTERM, forward_signal); signal(SIGINT, forward_signal); signal(SIGHUP, forward_signal);
-    int mutation=op && strcmp(op,"read");
-    if(mutation)checkpoint("before-write");
     child = fork();
     if (child < 0) return 1;
     if (child == 0) {
+        setsid(); // bounded termination includes the delegate's children
         const char *select = getenv("BB_CLAUDE_AUTH_READ_SELECTION");
         int secret_read=0;
         for(int i=2;i<argc;i++)if(!strcmp(argv[i],"-w"))secret_read=1;
@@ -116,12 +107,25 @@ int main(int argc, char **argv) {
         _exit(127);
     }
     trace(op,"start",child,-1,-1,0);
-    int status;
-    while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) return 1; }
+    int status=0;
+    const long long limit=op && !strcmp(op,"read") ? 1500 : 6000;
+    while (1) {
+        pid_t done=waitpid(child,&status,bounded ? WNOHANG : 0);
+        if(done==child)break;
+        if(done<0 && errno!=EINTR)return 1;
+        if(bounded && millis(CLOCK_MONOTONIC)-start>=limit){
+            kill(-child,SIGKILL);kill(child,SIGKILL);
+            while(waitpid(child,&status,0)<0 && errno==EINTR){}
+            trace(op,"timeout",child,124,1,millis(CLOCK_MONOTONIC)-start);
+            if(!strcmp(op,"read"))read_cooldown(1);
+            return 1;
+        }
+        struct timespec delay={0,1000000};nanosleep(&delay,NULL);
+    }
     int original = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
     int result = guarded_exit(argc, argv, original);
+    if(op && !strcmp(op,"read") && (original==36 || original==143))read_cooldown(1);
     trace(op,"finish",child,original,result,millis(CLOCK_MONOTONIC)-start);
-    if(mutation)checkpoint("after-write");
     if (result != original) {
         int fd = log_fd(BB_AUTH_LOG_DIRECTORY "/guard.jsonl");
         if (fd >= 0) {
