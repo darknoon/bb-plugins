@@ -8,4 +8,7 @@ test -x "$target" || { echo 'Claude executable is unavailable' >&2; exit 126; }
 test "$target" != "$guard_dir/claude-guarded" || exit 126
 PATH="$guard_dir/bin:$PATH"
 export PATH
+if test -f /Users/andrew/.local/state/bb-claude-auth/debug-window.json; then
+  exec /opt/homebrew/bin/node "$guard_dir/debug-launch.cjs" "$target" "$@"
+fi
 exec "$target" "$@"

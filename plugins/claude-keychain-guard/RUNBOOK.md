@@ -102,3 +102,28 @@ node /Users/andrew/.bb/personal-workspaces/env_d8q42fpwem/incident-repair-keycha
 Never write `Claude Code-credentials` through an ad-hoc-signed compiled helper.
 Never delete the fallback or primary to simplify diagnosis. Saved tokens do not
 constitute tested recovery, and expired access does not prove refresh validity.
+
+## Temporary refresh diagnostics (opt-in, not activated)
+
+2.1.285's bounded `--help` confirms `--debug-file <path>`. The optional
+`debug-launch.cjs` supervisor routes this output through a private FIFO to a
+collector. It stores **only** fixed OAuth classifications and numeric HTTP status
+codes when the same line contains them. No raw lines, prompts, URLs, token values,
+request IDs, headers or response bodies are retained. It cannot invent a response
+code if Claude's logger never emits one; that remains a live verification item.
+
+Activation requires a 0600 `debug-window.json` in the 0700 state directory with
+numeric epoch-ms `startedAt` and `until`, at most 72h apart. No file is created by
+installing this PR, and it is off by default. The launcher only opts in while the
+window is valid and the binary is verified 2.1.285. At expiry a running collector
+continues draining/discarding to avoid blocking Claude, but retains nothing;
+new processes receive no debug flag. Existing processes are not restarted.
+
+Capture uses at most 16 concurrent slots, each a 0600 log capped at 256 KiB (4 MiB
+total). Slots reuse their own bounded file. No blanket cleanup of user data is
+performed. A crashed collector can leave a slot lock; inspect and remove only
+that verified stale lock manually. Failure to set up capture runs Claude without
+diagnostics and prints a fixed, secret-free warning. This transport has a dummy
+FIFO writer test; **actual Claude debug-to-FIFO behavior must pass a bounded,
+permission-safe canary before enabling the 72h window**. No live debug capture
+or token-endpoint failure has been claimed in this PR.
