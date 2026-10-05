@@ -1,0 +1,18 @@
+{
+  "name": "bb-plugin-claude-keychain-guard",
+  "version": "0.2.0",
+  "type": "module",
+  "engines": { "bbPluginSdk": ">=0.6.15" },
+  "bb": {
+    "name": "Claude Keychain Guard",
+    "description": "Preserve Claude credentials on denied reads and empty cleanup writes.",
+    "branding": { "icon": "Shield" },
+    "server": "./server.ts",
+    "skills": []
+  },
+  "scripts": {
+    "build": "mkdir -p bin && cc -O2 -Wall -Wextra -Werror security-guard.c -o bin/security && chmod 700 claude-guarded write-guard.cjs && bb plugin build",
+    "test": "node --test guard.test.cjs"
+  },
+  "devDependencies": { "@get-bb/plugin-sdk": "0.6.15", "@types/node": "^22.0.0", "typescript": "^5.7.0" }
+}
