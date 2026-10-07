@@ -139,5 +139,5 @@ Tests use the public Plugin SDK backend/frontend harnesses and real loopback
 processes. They exercise crash/backoff and cleanup, durable Stop/startup,
 health response validation, reservations, rule ownership, CLI contracts, and
 the left-tab controls and promotion form. Tests need a free port in 5901–5909.
-Use a separate bb data directory and loopback control port for live PR previews;
-install production only after the contributing code has merged.
+Work in this repository’s main checkout. Build and reload the plugin in the
+running bb to test it; install from commits on main.

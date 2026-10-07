@@ -2,12 +2,12 @@
 
 The existing viewer is `com.fieldwork.harbor-view`, running on loopback 5995
 with a private Tailscale HTTPS rule. Keep this job and its plist until Andrew
-explicitly authorizes removing them. Production installation must use merged
-code; an open PR is verified with an isolated bb instance instead.
+explicitly authorizes removing them. Install and test the plugin from this repository’s main checkout;
+no worktree or PR is required.
 
-## Prepare after merge
+## Prepare on main
 
-Build/install the merged Dev Servers plugin, preserving its existing storage
+Build/install the Dev Servers plugin from main, preserving its existing storage
 and settings. Register Harbor stopped so its existing process is undisturbed:
 
 ```sh
