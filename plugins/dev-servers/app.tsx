@@ -18,6 +18,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
+import { PersistentServers, type Promotion } from "./persistent-ui";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -464,6 +465,7 @@ function ServerOpenButtons({ server, onOpen }: { server: Server; onOpen: (server
 function DevServersPanel() {
   const navigate = useBbNavigate();
   const { servers, loading, error, refresh } = useDevServers();
+  const [promotion, setPromotion] = useState<Promotion | undefined>(undefined);
 
   const openInPanel = (server: Server) => {
     const url = serverUrl(server);
@@ -504,6 +506,8 @@ function DevServersPanel() {
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
+        <PersistentServers promotion={promotion} onClosePromotion={() => setPromotion(undefined)} />
+        <h2 className="border-b border-border bg-background px-4 py-2 text-sm font-medium">Thread dev servers</h2>
         {error ? <p className="px-4 py-3 text-sm text-destructive">{error}</p> : null}
         {!loading && !error && servers.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -538,6 +542,9 @@ function DevServersPanel() {
                     )}
                   </div>
                   <ServerOpenButtons server={server} onOpen={openInPanel} />
+                  {server.command ? <Button size="sm" variant="outline" onClick={() => {
+                    setPromotion({ command: server.command!, port: server.port, name: `${server.projectName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-")}-${server.port}`.slice(0, 64) });
+                  }}>Promote</Button> : null}
                 </div>
                 <div
                   className="mt-2 flex min-w-0 items-center gap-1.5 text-sm font-medium"

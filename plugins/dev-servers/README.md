@@ -1,8 +1,9 @@
 # Dev Servers for BB
 
-Discover HTML development servers running in BB worktrees and preview them in
-BB. Each row shows the project, worktree, linked chat, port, process, and its
-associated BB terminal when one can be identified.
+Manage persistent machine servers and discover HTML development servers in BB
+worktrees. The left Dev Servers tab has **Persistent servers** and **Thread dev
+servers** sections. Thread rows retain their project, worktree, linked chat,
+port, process, terminal association, and preview workflow.
 
 - In a thread, choose **New tab → Open dev server** to pick a running server
   and replace the chooser with a live preview and URL bar in that panel tab.
@@ -18,6 +19,70 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 
 Use `{port+1}` through `{port+9}` for additional services in the same
 worktree.
+
+## Persistent servers
+
+Persistent servers belong to this bb server machine. Their definitions and
+enabled state survive thread archival, worktree deletion, plugin reload, and
+bb restarts. bb's plugin background service starts enabled definitions,
+restarts failed processes with capped exponential backoff, and monitors the
+expected HTTP response. There is no per-server LaunchAgent.
+
+```sh
+bb dev-servers persist add --name canvas \
+  --cwd /Users/andrew/Developer/canvas-viewer \
+  --command 'npm run dev -- --host 127.0.0.1 --port {port}' \
+  --port 5901 --health-body '<title>Canvas</title>' --tailnet
+bb dev-servers persist list --json
+bb dev-servers persist logs canvas --lines 40
+bb dev-servers persist restart canvas
+bb dev-servers persist stop canvas
+bb dev-servers persist start canvas
+bb dev-servers persist remove canvas
+```
+
+The UI displays running/starting/crashed/restarting/stopped status, uptime,
+health, last exit, retry time, recent stdout/stderr, and Start/Stop/Restart.
+**Promote** on a thread row prepares the command for a persistent definition;
+review it, choose a durable directory, and select a free fixed port. Managed
+worktree directories are refused, and the original thread server continues
+running. **Add** registers a new definition directly.
+
+Use ports 5901–5909 when possible. Persistent ports must be 5901–5999 and
+outside live worktree blocks. Even stopped definitions reserve their port;
+future block allocation skips the entire overlapping block. For example,
+reserving 5995 makes 5990–5999 unavailable to worktrees. Explicit thread
+`--port` also respects persistent reservations. Removing the definition frees
+the reservation.
+
+Commands run in `/bin/sh` with bb's environment and the chosen working
+directory, on the **server machine**, even for CLI callers on another machine.
+Use a foreground process and loopback binding. `{port}` expands to the fixed
+port. The watchdog owns its process group and shuts descendants down on Stop,
+reload, disable, normal shutdown, or loss of bb's pipe lease after an abrupt
+exit. Enabled definitions restart when bb starts; a manual Stop stays stopped.
+
+By default, health expects HTTP 200 and `text/html` from `GET /`; add an
+expected `--health-body` to identify the application. Path, status and
+Content-Type are configurable, body reads are bounded to 64 KiB, and requests
+time out in three seconds. After a 30-second startup grace, three failed
+checks restart the process. Exits retry after 1, 2, 4, … seconds up to 60
+seconds; a minute of healthy operation resets backoff. A TCP connection alone
+does not mark a server healthy.
+
+`--tailnet` creates a private Tailscale Serve HTTPS proxy on the fixed port,
+after health passes. The plugin saves its ownership and removes its exact
+rule on Stop/removal/shutdown. Startup recreates it. It refuses public Funnel,
+other proxy targets and extra handlers; an identical existing private rule
+requires explicit `--adopt-tailnet-rule`. Cleanup failures retain ownership
+for retries; modified rules are preserved. Persistent servers never use BB
+Connect. Tailscale must already be connected and support non-interactive
+Serve; `TAILSCALE_BIN` selects its executable.
+
+Use `--stopped` to prepare a cutover without disturbing another process.
+See [Harbor cutover](harbor-migration.md) and the full
+[agent skill](skills/dev-servers/SKILL.md) for operational constraints and
+command options.
 
 ## Port blocks
 
@@ -35,9 +100,10 @@ Changing the range invalidates saved allocations that no longer match it.
 
 ## Current scope
 
-- Discovery runs on the BB server host and currently uses macOS `lsof` and
+- Thread discovery runs on the BB server host and currently uses macOS `lsof` and
   `ps`.
-- Only listeners serving HTML from known BB project environments are shown.
+- Thread discovery shows only HTML listeners from known BB project environments.
+  Persistent definitions are global and are excluded from thread discovery.
 - When BB is opened through a Tailscale `*.ts.net` origin and Tailscale Serve
   already exposes a server's HTTPS port, previews use that Tailnet URL. This
   avoids a second sign-in and keeps access inside the Tailnet.
@@ -62,3 +128,16 @@ bb plugin dev
 
 Saving a source file rebuilds and reloads the plugin while this command is
 running.
+
+```sh
+npm run typecheck
+npm test
+bb plugin build .
+```
+
+Tests use the public Plugin SDK backend/frontend harnesses and real loopback
+processes. They exercise crash/backoff and cleanup, durable Stop/startup,
+health response validation, reservations, rule ownership, CLI contracts, and
+the left-tab controls and promotion form. Tests need a free port in 5901–5909.
+Use a separate bb data directory and loopback control port for live PR previews;
+install production only after the contributing code has merged.
