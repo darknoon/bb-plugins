@@ -21,8 +21,8 @@
     "skipLibCheck": false
   },
   "include": [
-    "server.ts",
-    "app.tsx",
+    "*.ts",
+    "*.tsx",
     "components",
     "lib",
     "hooks"
