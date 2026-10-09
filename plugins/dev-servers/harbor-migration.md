@@ -24,7 +24,7 @@ with five-port blocks (or 5990–5999 with legacy ten-port blocks).
 If a live block already owns 5995, resolve that allocation first; do not steal
 it or change settings to hide the conflict.
 
-Before cutover, compare a supervised preview on a free 5901–5909 port with
+Before cutover, compare a supervised preview on a free 6360–6378 port with
 both `http://127.0.0.1:5995/` and
 `https://prefix-mini.tail06618c.ts.net:5995/`, including the HTML and at least
 one application API response. Exercise Restart, Stop/Start, crash recovery,

@@ -12,11 +12,18 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
 - By default, an environment gets five consecutive ports when its first server starts.
-  Eighteen blocks cover 5910–5999; port 5900 is excluded. Permanent project checkouts
+  Ninety blocks cover 5910–6359. Permanent project checkouts
   and idle worktrees hold no block. After the last listener and managed terminal exit,
   the block is released within 15 seconds or before the next allocation. Ports can
   change after stopping every server, so always expand the placeholders again.
 - The plugin settings `portBase`, `blockSize`, and `blockCount` control the allocation range.
+- Ports below 5910 are unavailable. The hard-coded denylist is 22, 80, 443,
+  3389, 5432, **5900–5909**, 6379, 8080, 38886, 38887, and 41641, plus bb's
+  actual server and configured host-daemon ports. Screen Sharing was blocked
+  for three days by an orphaned Serve rule on 5900; never claim this span even
+  if no application answers. Startup rejects an overlapping configured range
+  entirely, rather than skipping holes. Explicit ports and offsets, adoption,
+  persistent startup and private Serve creation follow the same policy.
 - `{port}` is the block's base — use it for the app's dev server. `{port+1}`, `{port+2}` … are the
   other slots in the same block; run a second service in the worktree on one of those rather than
   picking a number. An offset equal to or larger than the configured block size is an error, not a
@@ -38,7 +45,7 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 - Running blocks from the old ten-port configuration keep their full size until
   all their servers stop. New allocations use the current settings. Legacy
   explicitly saved settings are preserved; if still using them, set `blockSize` to `5` and
-  `blockCount` to `18`, keeping `portBase` at `5910`.
+  `blockCount` to `90`, keeping `portBase` at `5910`.
 
 ## Persistent servers
 
@@ -49,7 +56,7 @@ foreground command with the machine supervisor:
 bb dev-servers persist add --name canvas \
   --cwd /Users/andrew/Developer/canvas-viewer \
   --command 'npm run dev -- --host 127.0.0.1 --port {port}' \
-  --port 5901 --health-body '<title>Canvas</title>' --tailnet
+  --port 6360 --health-body '<title>Canvas</title>' --tailnet
 bb dev-servers persist list --json
 bb dev-servers persist logs canvas --lines 40
 bb dev-servers persist restart canvas
@@ -67,12 +74,15 @@ bb dev-servers persist remove canvas
   Dev Servers tab's **Promote** form prepares a command with `{port}` and asks
   for a durable directory and a new fixed port. The original thread server
   continues running until explicitly stopped.
-- Ports must be 5901–5999; 5900 belongs to VNC. Prefer 5901–5909, outside the
-  default worktree range. Persistent definitions reserve their ports even
+- Ports must be 5910–65535 and outside the infrastructure denylist. Prefer
+  free ports in 6360–6378, outside the default thread range. Persistent definitions reserve their ports even
   while stopped. The allocator skips an entire block containing a persistent
   port; add refuses a port already assigned to a live worktree. A stopped
   definition may be prepared on an externally occupied port, but Start refuses
   to claim that process. Explicit thread `--port` cannot use reserved ports.
+- Old definitions on newly forbidden ports are disabled at startup and their
+  exact owned private rules cleaned up. They remain observable and removable;
+  Start/Restart refuses them. Register a replacement on an allowed fixed port.
 - `{port}` expands to the chosen fixed port. Use a foreground command that
   binds `127.0.0.1`; do not daemonize or use launchd. Commands inherit bb's
   environment, so absolute executable paths are useful for automatic startup.

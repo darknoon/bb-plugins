@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import type { rpcContract } from "./server";
 import type { PersistentServer } from "./persistent";
+import { DEFAULT_PERSISTENT_PORT } from "./port-policy";
 
 export type Promotion = { command: string; port: number; name: string };
 const fieldClass = "w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm";
@@ -44,8 +45,8 @@ export function PersistentForm({ promotion, onDone }: { promotion: Promotion | n
       <label className="block text-xs">Name<input name="name" required maxLength={64} pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]*" defaultValue={promotion?.name} className={fieldClass} /></label>
       <label className="block text-xs">Working directory on this machine<input name="cwd" required placeholder="/Users/andrew/Developer/my-viewer" className={fieldClass} /></label>
       <label className="block text-xs">Command<textarea name="command" required defaultValue={command} placeholder="npm run dev -- --host 127.0.0.1 --port {port}" className={fieldClass} rows={3} /></label>
-      <label className="block text-xs">Fixed port<input name="port" type="number" required min={5901} max={5999} defaultValue={5901} className={fieldClass} /></label>
-      <p className="text-xs text-muted-foreground">5901–5909 are outside the default worktree blocks. The command must run in the foreground; {"{port}"} uses this fixed port.</p>
+      <label className="block text-xs">Fixed port<input name="port" type="number" required min={5910} max={65535} defaultValue={DEFAULT_PERSISTENT_PORT} className={fieldClass} /></label>
+      <p className="text-xs text-muted-foreground">Prefer a free port in 6360–6378, outside the default thread blocks. Infrastructure ports, including 5900–5909, are reserved. Run the command in the foreground; {"{port}"} uses this fixed port.</p>
       <details>
         <summary className="cursor-pointer text-xs">Health check and tailnet access</summary>
         <div className="mt-2 space-y-2">

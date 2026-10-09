@@ -24,13 +24,13 @@ function fixture() {
 test("private rules are created and removed without touching other routes", async () => {
   const { rules, mutations, existing, serve, dnsName } = fixture();
   existing(443, "http://127.0.0.1:38886");
-  const rule = await rules.inspect(5901);
+  const rule = await rules.inspect(6360);
   await rules.ensure(rule);
-  expect(mutations[0]).toEqual(["serve", "--bg", "--yes", "--https=5901", "http://127.0.0.1:5901"]);
+  expect(mutations[0]).toEqual(["serve", "--bg", "--yes", "--https=6360", "http://127.0.0.1:6360"]);
   await rules.remove(rule);
-  expect(mutations[1]).toEqual(["serve", "--yes", "--https=5901", "off"]);
+  expect(mutations[1]).toEqual(["serve", "--yes", "--https=6360", "off"]);
   expect(serve.Web[`${dnsName}:443`]).toBeDefined();
-  expect(serve.Web[`${dnsName}:5901`]).toBeUndefined();
+  expect(serve.Web[`${dnsName}:6360`]).toBeUndefined();
 });
 
 test("existing identical rule requires explicit adoption; changed proxy and Funnel are refused", async () => {
@@ -57,4 +57,14 @@ test("extra handlers are never overwritten or deleted by adoption", async () => 
   serve.Web[`${dnsName}:5995`].Handlers["/other"] = { Proxy: "http://127.0.0.1:1234" };
   await expect(rules.inspect(5995, true)).rejects.toThrow();
   expect(mutations).toEqual([]);
+});
+
+test("an exactly owned legacy rule on a newly forbidden port can still be cleaned up", async () => {
+  const { rules, existing, dnsName, serve, mutations } = fixture();
+  existing(443, "http://127.0.0.1:38886");
+  existing(5909);
+  await rules.remove({ dnsName, port: 5909, proxy: "http://127.0.0.1:5909" });
+  expect(mutations).toEqual([["serve", "--yes", "--https=5909", "off"]]);
+  expect(serve.Web[`${dnsName}:443`]).toBeDefined();
+  expect(serve.Web[`${dnsName}:5909`]).toBeUndefined();
 });

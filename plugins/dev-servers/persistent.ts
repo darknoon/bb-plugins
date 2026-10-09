@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { createServer } from "node:net";
@@ -7,6 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { TailnetRules } from "./tailnet";
+import { assertPortAllowed, portPolicyError, runtimeInfrastructurePorts } from "./port-policy";
+
+const execFile = promisify(execFileCallback);
 
 export const healthConfigSchema = z.object({
   path: z.string().max(1024).refine((s) => s.startsWith("/") && !s.startsWith("//"), "Use a local HTTP path").default("/"),
@@ -18,7 +22,7 @@ export const persistentInputSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/, "Use 1–64 letters, numbers, dots, underscores or hyphens"),
   cwd: z.string().min(1).max(4096),
   command: z.string().trim().min(1).max(4096),
-  port: z.number().int().min(5901).max(5999),
+  port: z.number().int().min(5910).max(65535).refine((port) => portPolicyError(port) === null, { message: "Port is reserved for infrastructure" }),
   enabled: z.boolean().default(true),
   health: healthConfigSchema.prefault({}),
   tailnet: z.boolean().default(false),
@@ -27,6 +31,8 @@ export const persistentInputSchema = z.object({
 const exitSchema = z.object({ at: z.number(), code: z.number().nullable(), signal: z.string().nullable(), reason: z.string() });
 const logSchema = z.object({ at: z.number(), stream: z.enum(["stdout", "stderr", "supervisor"]), line: z.string() });
 export const persistentServerSchema = persistentInputSchema.extend({
+  // Legacy forbidden definitions remain observable and removable after upgrade.
+  port: z.number().int().min(1).max(65535),
   state: z.enum(["stopped", "starting", "running", "crashed", "restarting"]),
   pid: z.number().nullable(),
   startedAt: z.number().nullable(),
@@ -41,6 +47,7 @@ export const persistentServerSchema = persistentInputSchema.extend({
 export type PersistentInput = z.infer<typeof persistentInputSchema>;
 export type PersistentServer = z.infer<typeof persistentServerSchema>;
 const definitionSchema = persistentInputSchema.extend({
+  port: z.number().int().min(1).max(65535),
   rule: z.object({ dnsName: z.string(), port: z.number(), proxy: z.string() }).nullable().default(null),
 });
 type Definition = z.infer<typeof definitionSchema>;
@@ -99,6 +106,16 @@ export function restartDelay(failures: number) {
 }
 
 export async function portAvailable(port: number) {
+  if (portPolicyError(port)) return false;
+  try {
+    // A loopback bind alone misses a listener on ::1 or another interface.
+    // Allocation cares about occupancy, independently of the protocol served.
+    const { stdout } = await execFile("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fn"]);
+    if (stdout.trim()) return false;
+  } catch (cause) {
+    const error = cause as { code?: number; stdout?: string };
+    if (error.code !== 1 || error.stdout !== "") return false;
+  }
   return new Promise<boolean>((resolve) => {
     const socket = createServer();
     socket.once("error", () => resolve(false));
@@ -177,14 +194,27 @@ export class PersistentSupervisor {
       const definition = definitionSchema.parse(await this.bb.storage.kv.get(key));
       const history = z.object({ lastExit: exitSchema.nullable(), logs: z.array(logSchema), failures: z.number().int().nonnegative() })
         .safeParse(await this.bb.storage.kv.get(`persistent-history:${definition.name}`));
-      this.runtimes.set(definition.name, {
+      const runtime: Runtime = {
         definition, state: "stopped", child: null, done: Promise.resolve(), exit: null,
         lastExit: history.success ? history.data.lastExit : null,
         logs: history.success ? history.data.logs.slice(-80) : [],
         failures: history.success ? history.data.failures : 0,
         startedAt: null, restartAt: null, healthySince: null, unhealthyCount: 0,
         lastProbe: 0, lastRuleCheck: 0, healthResult: null, dirty: false,
-      });
+      };
+      this.runtimes.set(definition.name, runtime);
+      const error = portPolicyError(definition.port, runtimeInfrastructurePorts(this.bb));
+      if (error) {
+        definition.enabled = false;
+        runtime.state = "crashed";
+        runtime.lastExit = { at: Date.now(), code: null, signal: null, reason: error };
+        this.log(runtime, "supervisor", `Disabled: ${error}`);
+        await this.save(runtime);
+        // Cleanup must still accept an old forbidden port, otherwise its orphaned
+        // private Serve listener would recreate the Screen Sharing failure.
+        try { await this.removeRule(runtime); }
+        catch (cause) { this.log(runtime, "supervisor", `Serve cleanup: ${String(cause)}`); }
+      }
     }
   }
 
@@ -235,7 +265,8 @@ export class PersistentSupervisor {
 
   async add(input: PersistentInput) {
     return this.exclusive(async () => {
-      const definition = definitionSchema.parse(input);
+      const definition = definitionSchema.parse(persistentInputSchema.parse(input));
+      assertPortAllowed(definition.port, runtimeInfrastructurePorts(this.bb));
       definition.command = definition.command.replaceAll("{port}", String(definition.port));
       if (this.runtimes.has(definition.name)) throw new Error(`Persistent server ${definition.name} already exists`);
       if (this.runtimes.size >= 32) throw new Error("At most 32 persistent servers are supported");
@@ -261,6 +292,7 @@ export class PersistentSupervisor {
   async control(name: string, action: "start" | "stop" | "restart" | "remove") {
     return this.exclusive(async () => {
       const r = this.get(name);
+      if (action === "start" || action === "restart") assertPortAllowed(r.definition.port, runtimeInfrastructurePorts(this.bb));
       if (action === "start" && r.definition.enabled && r.child) return;
       r.definition.enabled = action === "start" || action === "restart";
       await this.save(r); // Stop intent survives bb restart, including cleanup failures.
@@ -288,6 +320,7 @@ export class PersistentSupervisor {
   }
   private async launch(r: Runtime) {
     try {
+      assertPortAllowed(r.definition.port, runtimeInfrastructurePorts(this.bb));
       await this.validateLocationAndPort(r.definition.cwd, r.definition.port);
       if (!(await portAvailable(r.definition.port))) throw new Error(`Port ${r.definition.port} is in use; refusing to supervise an unrelated process`);
       const child = spawn(process.execPath, ["-e", WATCHDOG, r.definition.command, r.definition.cwd], { stdio: ["pipe", "pipe", "pipe", "ipc"] });

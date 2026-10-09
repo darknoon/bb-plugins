@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +16,8 @@ async function waitFor(check: () => Promise<boolean>, timeout = 10_000) {
   while (!(await check())) { if (Date.now() > until) throw new Error("Timed out"); await delay(50); }
 }
 async function freePort() {
-  for (let port = 5901; port <= 5909; port++) if (await portAvailable(port)) return port;
-  throw new Error("No spare persistent test port in 5901–5909");
+  for (let port = 6360; port <= 6368; port++) if (await portAvailable(port)) return port;
+  throw new Error("No spare persistent test port in 6360–6368");
 }
 async function fixture() {
   const cwd = await mkdtemp(join(tmpdir(), "persistent-test-"));
@@ -32,6 +33,13 @@ function command(port: number) {
 }
 
 describe("persistent process lifecycle", () => {
+  test("IPv6-only non-HTTP listeners also make a persistent port unavailable", async () => {
+    const port = await freePort();
+    const server = createTcpServer((socket) => socket.end("binary service"));
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "::1", resolve); });
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    expect(await portAvailable(port)).toBe(false);
+  });
   test("starts on service startup, checks HTTP, restarts, stops durably, and releases the process group", async () => {
     const { cwd, host, port } = await fixture();
     const supervisor = new PersistentSupervisor(host.bb, async () => {});
@@ -180,7 +188,7 @@ describe("plugin wire contracts and reservations", () => {
     await expect(add("two")).rejects.toThrow("reserved");
     await expect(add("vnc", 5900)).rejects.toThrow();
     await expect(add("public-port", 3000)).rejects.toThrow();
-    const next = port === 5909 ? 5908 : port + 1;
+    const next = port === 6368 ? 6367 : port + 1;
     host.harness.inspection.sdk.stub("environments.list", async () => [{ id: "worktree", path: cwd, status: "ready", workspaceProvisionType: "managed-worktree" }]);
     await expect(add("worktree", next)).rejects.toThrow("durable checkout");
     host.harness.inspection.sdk.stub("environments.list", async () => [{ id: "live", path: "/other", status: "ready", workspaceProvisionType: "managed-worktree" }]);

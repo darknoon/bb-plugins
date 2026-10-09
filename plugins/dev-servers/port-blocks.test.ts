@@ -83,9 +83,9 @@ test("seventeen concurrent five-port blocks fit beside Harbor, and adoption resp
 });
 
 test("wire start refuses a non-HTTP listener with its PID/thread, and adopt records the existing process", async () => {
-  let port = 5901;
-  while (port <= 5908 && !(await portAvailable(port))) port++;
-  expect(port).toBeLessThanOrEqual(5908);
+  let port = 6360;
+  while (port <= 6368 && !(await portAvailable(port))) port++;
+  expect(port).toBeLessThanOrEqual(6368);
   const server = createServer((socket) => socket.end("binary protocol"));
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -116,9 +116,9 @@ test("wire start refuses a non-HTTP listener with its PID/thread, and adopt reco
 });
 
 test("concurrent wire starts reserve separate blocks before either server binds", async () => {
-  let port = 5901;
-  while (port <= 5907 && (!(await portAvailable(port)) || !(await portAvailable(port + 1)))) port++;
-  expect(port).toBeLessThanOrEqual(5907);
+  let port = 6360;
+  while (port <= 6367 && (!(await portAvailable(port)) || !(await portAvailable(port + 1)))) port++;
+  expect(port).toBeLessThanOrEqual(6367);
   const host = hostFor(["a", "b"]);
   const sessions: Array<{ id: string; status: string; threadId: string }> = [];
   host.harness.inspection.sdk.stub("projects.list", async () => [{ id: "p", name: "Project", threads: [{ id: "ta", environmentId: "a" }, { id: "tb", environmentId: "b" }] }]);

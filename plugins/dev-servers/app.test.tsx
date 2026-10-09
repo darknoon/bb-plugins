@@ -57,10 +57,10 @@ test("promotion asks for durable working directory and a new fixed port then reg
   const form = within(slot.getByRole("form", { name: "Promote to persistent server" }));
   const cwd = form.getByLabelText("Working directory on this machine") as HTMLInputElement;
   expect(cwd.value).toBe("");
-  expect((form.getByLabelText("Fixed port") as HTMLInputElement).value).toBe("5901");
+  expect((form.getByLabelText("Fixed port") as HTMLInputElement).value).toBe("6360");
   expect((form.getByLabelText("Command") as HTMLTextAreaElement).value).toContain("{port}");
   fireEvent.change(cwd, { target: { value: "/durable/canvas" } });
   fireEvent.submit(slot.getByRole("form"));
   await waitFor(() => expect(added).toHaveLength(1));
-  expect(added[0]).toMatchObject({ cwd: "/durable/canvas", port: 5901, command: "npm run dev -- --port {port}", enabled: true });
+  expect(added[0]).toMatchObject({ cwd: "/durable/canvas", port: 6360, command: "npm run dev -- --port {port}", enabled: true });
 });

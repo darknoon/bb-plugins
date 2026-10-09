@@ -32,7 +32,7 @@ expected HTTP response. There is no per-server LaunchAgent.
 bb dev-servers persist add --name canvas \
   --cwd /Users/andrew/Developer/canvas-viewer \
   --command 'npm run dev -- --host 127.0.0.1 --port {port}' \
-  --port 5901 --health-body '<title>Canvas</title>' --tailnet
+  --port 6360 --health-body '<title>Canvas</title>' --tailnet
 bb dev-servers persist list --json
 bb dev-servers persist logs canvas --lines 40
 bb dev-servers persist restart canvas
@@ -48,8 +48,9 @@ review it, choose a durable directory, and select a free fixed port. Managed
 worktree directories are refused, and the original thread server continues
 running. **Add** registers a new definition directly.
 
-Use ports 5901–5909 when possible. Persistent ports must be 5901–5999 and
-outside live worktree blocks. Even stopped definitions reserve their port;
+Prefer free ports in 6360–6378, outside the default thread range. Persistent
+ports must be 5910–65535, outside active worktree blocks and the infrastructure
+denylist below. Even stopped definitions reserve their port;
 future block allocation skips the entire overlapping block. For example,
 reserving 5995 makes 5995–5999 unavailable with five-port blocks (5990–5999
 with legacy ten-port blocks). Explicit thread
@@ -87,8 +88,8 @@ command options.
 
 ## Port blocks
 
-The defaults allocate eighteen five-port blocks starting at 5910, staying in
-5910–5999. Blocks are assigned when a server starts and released after the last
+The defaults allocate ninety five-port blocks in 5910–6359, stopping below
+Redis's 6379. Blocks are assigned when a server starts and released after the last
 listener and managed terminal exit, within 15 seconds or before the next
 allocation. Idle worktrees and permanent checkouts do not hold ports. Running
 servers retain their blocks; ports may change after every server stops.
@@ -114,14 +115,27 @@ settings, or from the CLI:
 ```sh
 bb plugin config dev-servers set portBase 5910
 bb plugin config dev-servers set blockSize 5
-bb plugin config dev-servers set blockCount 18
+bb plugin config dev-servers set blockCount 90
 ```
 
 Explicitly saved settings are preserved on upgrade; unsaved defaults change
-to five ports and eighteen blocks. Running legacy blocks keep their
+to five ports and ninety blocks. Running legacy blocks keep their
 old size until their servers stop, even after the settings change. Fresh
 allocations then use the configured size. Harbor's 5995 reservation excludes
-the 5995–5999 block with these defaults, leaving seventeen concurrent blocks.
+the 5995–5999 block with these defaults, leaving eighty-nine concurrent blocks
+once legacy blocks drain.
+
+The hard-coded infrastructure denylist is **22, 80, 443, 3389, 5432,
+5900–5909, 6379, 8080, 38886, 38887, and 41641**. bb's actual server port
+and `BB_HOST_DAEMON_PORT` are protected too when configured differently.
+Screen Sharing lost its VNC greeting for three days when an orphaned Serve
+rule claimed 5900, so the entire 5900–5909 span is reserved even if idle.
+Ports below 5910 are never assigned. At startup and on each allocation the
+entire configured range is checked: any overlap fails instead of skipping a
+hole. Explicit ports and offsets, adoption, persistent startup and private
+Serve creation enforce the same policy. Old forbidden persistent definitions
+are disabled, remain removable, and have their exact owned private rule cleaned
+up. IPv4/IPv6 and non-HTTP listeners protect ports before a new server starts.
 
 ## Current scope
 
@@ -163,6 +177,6 @@ bb plugin build .
 Tests use the public Plugin SDK backend/frontend harnesses and real loopback
 processes. They exercise crash/backoff and cleanup, durable Stop/startup,
 health response validation, reservations, rule ownership, CLI contracts, and
-the left-tab controls and promotion form. Tests need a free port in 5901–5909.
+the left-tab controls and promotion form. Tests need a free port in 6360–6368.
 Work in this repository’s main checkout. Build and reload the plugin in the
 running bb to test it; install from commits on main.

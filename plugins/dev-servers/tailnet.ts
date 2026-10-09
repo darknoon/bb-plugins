@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { assertPortAllowed } from "./port-policy";
 
 const execFile = promisify(execFileCallback);
 export type TailnetRule = { dnsName: string; port: number; proxy: string };
@@ -36,6 +37,7 @@ export class TailnetRules {
     if (serve.AllowFunnel?.[`${rule.dnsName}:${rule.port}`]) throw new Error(`Port ${rule.port} has public Funnel enabled; persistent servers require tailnet-only access`);
   }
   async inspect(port: number, adopt = false, owned: TailnetRule | null = null): Promise<TailnetRule> {
+    assertPortAllowed(port);
     const { dnsName, serve } = await this.status();
     const rule = { dnsName, port, proxy: `http://127.0.0.1:${port}` };
     this.assertPrivate(serve, rule);
@@ -46,6 +48,7 @@ export class TailnetRules {
     return rule;
   }
   async ensure(rule: TailnetRule) {
+    assertPortAllowed(rule.port);
     const { dnsName, serve } = await this.status();
     if (dnsName !== rule.dnsName) throw new Error("Tailnet identity changed; refusing to alter another machine's rule");
     this.assertPrivate(serve, rule);

@@ -6,6 +6,7 @@ import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get
 import { z } from "zod";
 import { PersistentSupervisor, persistentInputSchema, persistentServerSchema } from "./persistent";
 import { adoptBlock, assignBlock, blockBase, blockContains, blockSize, lastPort, managedPortHolder, reclaimIdleBlocks, type Assignment, type Block, type PortConfig } from "./port-blocks";
+import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "./port-policy";
 export { assignBlock } from "./port-blocks";
 
 const execFile = promisify(execFileCallback);
@@ -175,27 +176,17 @@ async function tailnetUrls(ports: Iterable<number>) {
 // and `{port+N}` for the Nth slot.
 const DEFAULT_PORT_BASE = 5910;
 const DEFAULT_BLOCK_SIZE = 5;
-const DEFAULT_BLOCK_COUNT = 18;
+const DEFAULT_BLOCK_COUNT = 90;
 const PORT_PLACEHOLDER = /\{port(?:\+(\d+))?\}/g;
 
-function parsePortConfig(values: { portBase: string; blockSize: string; blockCount: string }) {
+export function parsePortConfig(values: { portBase: string; blockSize: string; blockCount: string }, infrastructure: Iterable<number> = []) {
   const config: PortConfig = {
     portBase: Number(values.portBase),
     blockSize: Number(values.blockSize),
     blockCount: Number(values.blockCount),
   };
-  if (!Number.isInteger(config.portBase) || config.portBase < 1024 || config.portBase > 65535) {
-    return { config: null, error: "First port must be an integer from 1024 to 65535." };
-  }
-  if (!Number.isInteger(config.blockSize) || config.blockSize < 1 || config.blockSize > 100) {
-    return { config: null, error: "Ports per worktree must be an integer from 1 to 100." };
-  }
-  if (!Number.isInteger(config.blockCount) || config.blockCount < 1 || config.blockCount > 100) {
-    return { config: null, error: "Worktree count must be an integer from 1 to 100." };
-  }
-  if (lastPort(config) > 65535) {
-    return { config: null, error: "The configured port blocks extend past port 65535." };
-  }
+  try { assertPortRange(config, infrastructure); }
+  catch (cause) { return { config: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   return { config, error: null };
 }
 
@@ -303,6 +294,7 @@ async function projectEnvironments(bb: BbPluginApi, projectId: string | null) {
     };
     return [result];
   });
+
 }
 
 async function terminalForPort(bb: BbPluginApi, environment: EnvironmentInfo, port: number, assignment: Assignment | null) {
@@ -444,8 +436,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  const startupConfig = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb, false));
+  if (!startupConfig.config) throw new Error(startupConfig.error!);
+
   async function validateLocationAndPort(cwd: string, port: number) {
-    const parsed = parsePortConfig(await settings.get());
+    assertPortAllowed(port, runtimeInfrastructurePorts(bb));
+    const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
     if (!parsed.config) throw new Error(parsed.error!);
     const config = parsed.config;
     await reclaimIdleBlocks(bb, new Set((await listenerRecords()).map((l) => l.port)), config);
@@ -466,19 +462,24 @@ export default async function plugin(bb: BbPluginApi) {
     for (const key of await bb.storage.kv.list("block:")) {
       const block = await bb.storage.kv.get<Block>(key);
       if (block && live.has(block.environmentId) && blockContains(block, port, config)) {
-        throw new Error(`Port ${port} belongs to live worktree block ${block.base}-${block.base + blockSize(block, config) - 1}. Use a free port such as 5901–5909.`);
+        throw new Error(`Port ${port} belongs to live worktree block ${block.base}-${block.base + blockSize(block, config) - 1}. Choose a free port outside active blocks, such as 6360–6378 with the defaults.`);
       }
     }
   }
   const persistent = new PersistentSupervisor(bb, validateLocationAndPort);
-  bb.background.service("persistent-servers", { start: (signal) => persistent.run(signal) });
+  bb.background.service("persistent-servers", { async start(signal) {
+    const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
+    if (!parsed.config) throw new Error(parsed.error!);
+    await persistent.run(signal);
+  } });
   bb.onDispose(() => persistent.dispose());
   bb.background.service("port-block-leases", { async start(signal) {
     while (!signal.aborted) {
       try {
         await persistent.exclusive(async () => {
-          const parsed = parsePortConfig(await settings.get());
-          if (parsed.config) await reclaimIdleBlocks(bb, new Set((await listenerRecords()).map((l) => l.port)), parsed.config);
+          const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
+          if (!parsed.config) throw new Error(parsed.error!);
+          await reclaimIdleBlocks(bb, new Set((await listenerRecords()).map((l) => l.port)), parsed.config);
         });
       } catch (cause) {
         if (!signal.aborted) bb.log.warn(`Could not inspect port block leases: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -527,7 +528,7 @@ export default async function plugin(bb: BbPluginApi) {
         // Serialize allocation with persistent reservations and other starts.
         return persistent.exclusive(async () => {
           const commandTemplate = input.options.command;
-          const parsedConfig = parsePortConfig(await settings.get());
+          const parsedConfig = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
           if (!parsedConfig.config) return { exitCode: 2, stderr: `${parsedConfig.error}\n` };
           const config = parsedConfig.config;
           const projects = await bb.sdk.projects.list({ include: "threads" });
@@ -558,10 +559,13 @@ export default async function plugin(bb: BbPluginApi) {
             return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${size}-port block.\n` };
           }
           const requested = ports.length ? ports : [base];
-          const clash = [base, ...ports].find((candidate) => reserved.has(candidate)) ?? requested.find((candidate) => occupied.has(candidate));
+          for (const candidate of new Set([base, ...requested])) assertPortAllowed(candidate, runtimeInfrastructurePorts(bb));
+          const currentListeners = await listenerRecords();
+          const currentOccupied = new Set(currentListeners.map((l) => l.port));
+          const clash = [base, ...ports].find((candidate) => reserved.has(candidate)) ?? requested.find((candidate) => currentOccupied.has(candidate));
           if (clash !== undefined) {
-            await reclaimIdleBlocks(bb, occupied, config);
-            const detail = reserved.has(clash) ? [`Port ${clash}: reserved by a persistent server`] : await describeHolders(listeners, new Set([clash]));
+            await reclaimIdleBlocks(bb, currentOccupied, config);
+            const detail = reserved.has(clash) ? [`Port ${clash}: reserved by a persistent server`] : await describeHolders(currentListeners, new Set([clash]));
             return { exitCode: 1, stderr: `Port ${clash} is already in use or reserved.\n${detail.join("\n")}\n` };
           }
           for (const candidate of new Set(requested)) {
@@ -588,7 +592,7 @@ export default async function plugin(bb: BbPluginApi) {
       async run(input, context) {
         if (!context.projectId || !context.threadId) return { exitCode: 2, stderr: "Adopt requires the server's BB project thread.\n" };
         return persistent.exclusive(async () => {
-          const parsed = parsePortConfig(await settings.get());
+          const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
           if (!parsed.config) return { exitCode: 2, stderr: `${parsed.error}\n` };
           const config = parsed.config;
           const projects = await bb.sdk.projects.list({ include: "threads" });
@@ -599,6 +603,7 @@ export default async function plugin(bb: BbPluginApi) {
           const path = await realpath(environment.path);
           const listeners = await listenerRecords();
           const port = input.options.port;
+          assertPortAllowed(port, runtimeInfrastructurePorts(bb));
           const prior = await bb.storage.kv.get<Block>(`block:${environment.id}`);
           const base = prior && blockContains(prior, port, config) ? prior.base : blockBase(config, Math.floor((port - config.portBase) / config.blockSize));
           const size = prior && blockContains(prior, port, config) ? blockSize(prior, config) : config.blockSize;
@@ -629,7 +634,7 @@ export default async function plugin(bb: BbPluginApi) {
         name: { type: "string", required: true, description: "Unique name (1–64 letters, numbers, ._- )" },
         cwd: { type: "string", aliases: ["server-cwd", "directory"], required: true, description: "Absolute directory on the bb SERVER machine, outside managed worktrees" },
         command: { type: "string", required: true, description: "Foreground shell command using the fixed port" },
-        port: { type: "integer", required: true, min: 5901, max: 5999, description: "Fixed port outside live worktree blocks; 5901–5909 are outside the defaults" },
+        port: { type: "integer", required: true, min: 5910, max: 65535, description: "Fixed port outside active worktree blocks and infrastructure denylist; prefer 6360–6378" },
         stopped: { type: "boolean", description: "Register stopped; Start enables automatic startup" },
         tailnet: { type: "boolean", description: "Own a private Tailscale Serve HTTPS rule on the same port" },
         "adopt-tailnet-rule": { type: "boolean", description: "Take ownership of an existing identical private proxy, including its cleanup" },

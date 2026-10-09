@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "./port-policy";
 
 export type PortConfig = { portBase: number; blockSize: number; blockCount: number };
 export type Block = { environmentId: string; index: number; base: number; size?: number };
@@ -89,9 +90,12 @@ export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, 
 }
 
 export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>) {
+  const infrastructure = runtimeInfrastructurePorts(bb);
+  assertPortRange(config, infrastructure);
   const active = await reclaimIdleBlocks(bb, occupied, config);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
+    assertPortRange({ portBase: prior.base, blockSize: prior.size!, blockCount: 1 }, infrastructure);
     if ([...reserved].some((port) => blockContains(prior, port, config))) {
       throw new Error("This worktree block overlaps a persistent port; adjust the worktree port settings");
     }
@@ -108,10 +112,14 @@ export async function assignBlock(bb: BbPluginApi, environmentId: string, occupi
 }
 
 export async function adoptBlock(bb: BbPluginApi, environmentId: string, port: number, occupied: Set<number>, config: PortConfig, reserved: Set<number>) {
+  const infrastructure = runtimeInfrastructurePorts(bb);
+  assertPortRange(config, infrastructure);
+  assertPortAllowed(port, infrastructure);
   if (port < config.portBase || port > lastPort(config)) throw new Error(`Port ${port} is outside the thread range ${config.portBase}-${lastPort(config)}`);
   const active = await reclaimIdleBlocks(bb, occupied, config);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
+    assertPortRange({ portBase: prior.base, blockSize: prior.size!, blockCount: 1 }, infrastructure);
     if (!blockContains(prior, port, config)) throw new Error(`This environment already uses block ${prior.base}-${prior.base + prior.size! - 1}`);
     if ([...reserved].some((candidate) => blockContains(prior, candidate, config))) throw new Error("This worktree block overlaps a persistent port");
     return prior;
