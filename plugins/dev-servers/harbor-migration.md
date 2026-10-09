@@ -19,7 +19,8 @@ bb dev-servers persist add --name harbor \
 ```
 
 Port 5995 must be outside every live worktree allocation. Registering it
-reserves that port and excludes the 5990–5999 block from future allocation.
+reserves that port and excludes the 5995–5999 block from future allocation
+with five-port blocks (or 5990–5999 with legacy ten-port blocks).
 If a live block already owns 5995, resolve that allocation first; do not steal
 it or change settings to hide the conflict.
 

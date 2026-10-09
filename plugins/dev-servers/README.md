@@ -17,8 +17,8 @@ Agents can start a server in a BB terminal with a stable port block:
 bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
-Use `{port+1}` through `{port+9}` for additional services in the same
-worktree.
+Use `{port+1}` through `{port+4}` for additional services in the same
+environment with the default five-port block.
 
 ## Persistent servers
 
@@ -51,7 +51,8 @@ running. **Add** registers a new definition directly.
 Use ports 5901–5909 when possible. Persistent ports must be 5901–5999 and
 outside live worktree blocks. Even stopped definitions reserve their port;
 future block allocation skips the entire overlapping block. For example,
-reserving 5995 makes 5990–5999 unavailable to worktrees. Explicit thread
+reserving 5995 makes 5995–5999 unavailable with five-port blocks (5990–5999
+with legacy ten-port blocks). Explicit thread
 `--port` also respects persistent reservations. Removing the definition frees
 the reservation.
 
@@ -86,17 +87,41 @@ command options.
 
 ## Port blocks
 
-The defaults allocate nine 10-port blocks starting at 5910. Configure the
+The defaults allocate eighteen five-port blocks starting at 5910, staying in
+5910–5999. Blocks are assigned when a server starts and released after the last
+listener and managed terminal exit, within 15 seconds or before the next
+allocation. Idle worktrees and permanent checkouts do not hold ports. Running
+servers retain their blocks; ports may change after every server stops.
+
+All TCP listeners protect ports, including non-HTML services. Managed terminals
+protect the interval before a server binds, and an unavailable terminal status
+keeps its lease. Conflict errors name the listening process, PID and linked
+thread, and flag unmanaged listeners. To associate a manually started server:
+
+```sh
+bb dev-servers adopt --port 5910 --json
+```
+
+Run adoption from the server's own project thread. It leases the block and
+records its thread without restarting or supervising the process. It refuses
+other environments' processes and persistent reservations. Adoption releases
+its lease when the listener stops. Persistent promotion adds supervision.
+
+Configure the
 first port, ports per worktree, and worktree-block count in BB's plugin
 settings, or from the CLI:
 
 ```sh
 bb plugin config dev-servers set portBase 5910
-bb plugin config dev-servers set blockSize 10
-bb plugin config dev-servers set blockCount 9
+bb plugin config dev-servers set blockSize 5
+bb plugin config dev-servers set blockCount 18
 ```
 
-Changing the range invalidates saved allocations that no longer match it.
+Explicitly saved settings are preserved on upgrade; unsaved defaults change
+to five ports and eighteen blocks. Running legacy blocks keep their
+old size until their servers stop, even after the settings change. Fresh
+allocations then use the configured size. Harbor's 5995 reservation excludes
+the 5995–5999 block with these defaults, leaving seventeen concurrent blocks.
 
 ## Current scope
 

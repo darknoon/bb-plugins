@@ -1,9 +1,12 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { realpath } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { PersistentSupervisor, persistentInputSchema, persistentServerSchema } from "./persistent";
+import { adoptBlock, assignBlock, blockBase, blockContains, blockSize, lastPort, managedPortHolder, reclaimIdleBlocks, type Assignment, type Block, type PortConfig } from "./port-blocks";
+export { assignBlock } from "./port-blocks";
 
 const execFile = promisify(execFileCallback);
 
@@ -65,23 +68,6 @@ type Listener = {
   cwd: string;
   command: string | null;
 };
-type Block = {
-  environmentId: string;
-  index: number;
-  base: number;
-};
-type PortConfig = {
-  portBase: number;
-  blockSize: number;
-  blockCount: number;
-};
-type Assignment = {
-  environmentId: string;
-  port: number;
-  terminalId: string;
-  command: string;
-  threadId?: string;
-};
 type ProjectThread = { id: string; environmentId: string | null };
 
 type TailscaleStatus = {
@@ -112,6 +98,19 @@ function parseListenerRecords(output: string) {
     if (match) rows.push({ pid, processName, port: Number(match[1]) });
   }
   return Array.from(new Map(rows.map((row) => [`${row.pid}:${row.port}`, row])).values());
+}
+
+async function listenerRecords() {
+  try {
+    const { stdout } = await execFile("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]);
+    return parseListenerRecords(stdout);
+  } catch (cause) {
+    // lsof exits 1 with empty stdout when there are no listeners. Other failures must
+    // not become a false idle snapshot that releases a running server's block.
+    const error = cause as { code?: number; stdout?: string };
+    if (error.code === 1 && error.stdout === "") return [];
+    throw cause;
+  }
 }
 
 async function processCwd(pid: number) {
@@ -175,10 +174,8 @@ async function tailnetUrls(ports: Iterable<number>) {
 // portBase + k*blockSize through +blockSize-1, written in commands as `{port}` for the base
 // and `{port+N}` for the Nth slot.
 const DEFAULT_PORT_BASE = 5910;
-const DEFAULT_BLOCK_SIZE = 10;
-const DEFAULT_BLOCK_COUNT = 9;
-const blockBase = (config: PortConfig, index: number) => config.portBase + index * config.blockSize;
-const lastPort = (config: PortConfig) => blockBase(config, config.blockCount - 1) + config.blockSize - 1;
+const DEFAULT_BLOCK_SIZE = 5;
+const DEFAULT_BLOCK_COUNT = 18;
 const PORT_PLACEHOLDER = /\{port(?:\+(\d+))?\}/g;
 
 function parsePortConfig(values: { portBase: string; blockSize: string; blockCount: string }) {
@@ -212,42 +209,6 @@ function expandPorts(template: string, base: number, blockSize: number) {
   return { command, ports: offsets.map((offset) => base + offset), overrun };
 }
 
-// A block is held for the environment's lifetime, not just while a server runs, so that a
-// worktree's ports never move under it. That means reclaiming blocks whose worktree is gone —
-// otherwise churning through worktrees exhausts the range with nothing running.
-export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>) {
-  const prior = await bb.storage.kv.get<Block>(`block:${environmentId}`);
-  if (prior && prior.index < config.blockCount && prior.base === blockBase(config, prior.index)) {
-    if ([...reserved].some((port) => port >= prior.base && port < prior.base + config.blockSize)) {
-      throw new Error("This worktree block overlaps a persistent port; adjust the worktree port settings");
-    }
-    return prior;
-  }
-  const live = new Set((await projectEnvironments(bb, null)).map((environment) => environment.id));
-  const held = new Set<number>();
-  for (const key of await bb.storage.kv.list("block:")) {
-    const block = await bb.storage.kv.get<Block>(key);
-    if (!block) continue;
-    const matchesConfig = block.index < config.blockCount && block.base === blockBase(config, block.index);
-    if (live.has(block.environmentId) && matchesConfig) held.add(block.index);
-    else await bb.storage.kv.delete(key);
-  }
-  // A server started outside the plugin holds no block record, so a block is also taken if
-  // anything is already listening inside it. Without this the first allocation after any manual
-  // `pnpm dev --port` hands out a block that is already half occupied and fails on the clash.
-  for (let index = 0; index < config.blockCount; index += 1) {
-    const base = blockBase(config, index);
-    const inUse = Array.from({ length: config.blockSize }, (_, slot) => base + slot).some((port) => occupied.has(port) || reserved.has(port));
-    if (inUse) held.add(index);
-  }
-  const index = Array.from({ length: config.blockCount }, (_, candidate) => candidate)
-    .find((candidate) => !held.has(candidate));
-  if (index === undefined) return null;
-  const block: Block = { environmentId, index, base: blockBase(config, index) };
-  await bb.storage.kv.set(`block:${environmentId}`, block);
-  return block;
-}
-
 async function isHtmlServer(port: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 700);
@@ -279,8 +240,7 @@ function commandAllowsPort(command: string | null, processName: string, port: nu
 }
 
 async function discoverListeners(excludedPorts = new Set<number>()) {
-  const { stdout } = await execFile("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]);
-  const candidates = parseListenerRecords(stdout).filter(({ port }) => port >= 1024 && port !== 38886 && port !== 38887 && !excludedPorts.has(port));
+  const candidates = (await listenerRecords()).filter(({ port }) => port >= 1024 && port !== 38886 && port !== 38887 && !excludedPorts.has(port));
   const listeners = await Promise.all(candidates.map(async (candidate): Promise<Listener | null> => {
     const [cwd, command, servesHtml] = await Promise.all([
       processCwd(candidate.pid),
@@ -350,7 +310,7 @@ async function terminalForPort(bb: BbPluginApi, environment: EnvironmentInfo, po
   // environment scope can never find that terminal, even though the terminal record carries
   // the same environmentId. Resolve the persisted terminal ID directly before falling back to
   // output-based inference for environment-scoped terminals started another way.
-  if (assignment) {
+  if (assignment?.terminalId) {
     try {
       const terminal = await bb.sdk.terminals.get({ terminalId: assignment.terminalId });
       if (terminal.environmentId === environment.id) {
@@ -479,7 +439,7 @@ export default async function plugin(bb: BbPluginApi) {
     blockCount: {
       type: "string",
       label: "Worktree blocks",
-      description: "Maximum number of worktrees that can hold a port block.",
+      description: "Maximum number of environments with concurrent port blocks. Idle blocks are released automatically.",
       default: String(DEFAULT_BLOCK_COUNT),
     },
   });
@@ -488,6 +448,7 @@ export default async function plugin(bb: BbPluginApi) {
     const parsed = parsePortConfig(await settings.get());
     if (!parsed.config) throw new Error(parsed.error!);
     const config = parsed.config;
+    await reclaimIdleBlocks(bb, new Set((await listenerRecords()).map((l) => l.port)), config);
     const environments = [];
     for (let offset = 0; ; offset += 1000) {
       const page = await bb.sdk.environments.list({ limit: 1000, offset });
@@ -504,15 +465,39 @@ export default async function plugin(bb: BbPluginApi) {
     const live = new Set(environments.filter((e) => e.status !== "destroyed").map((e) => e.id));
     for (const key of await bb.storage.kv.list("block:")) {
       const block = await bb.storage.kv.get<Block>(key);
-      if (block && live.has(block.environmentId) && block.index < config.blockCount
-        && block.base === blockBase(config, block.index) && port >= block.base && port < block.base + config.blockSize) {
-        throw new Error(`Port ${port} belongs to live worktree block ${block.base}-${block.base + config.blockSize - 1}. Use a free port such as 5901–5909.`);
+      if (block && live.has(block.environmentId) && blockContains(block, port, config)) {
+        throw new Error(`Port ${port} belongs to live worktree block ${block.base}-${block.base + blockSize(block, config) - 1}. Use a free port such as 5901–5909.`);
       }
     }
   }
   const persistent = new PersistentSupervisor(bb, validateLocationAndPort);
   bb.background.service("persistent-servers", { start: (signal) => persistent.run(signal) });
   bb.onDispose(() => persistent.dispose());
+  bb.background.service("port-block-leases", { async start(signal) {
+    while (!signal.aborted) {
+      try {
+        await persistent.exclusive(async () => {
+          const parsed = parsePortConfig(await settings.get());
+          if (parsed.config) await reclaimIdleBlocks(bb, new Set((await listenerRecords()).map((l) => l.port)), parsed.config);
+        });
+      } catch (cause) {
+        if (!signal.aborted) bb.log.warn(`Could not inspect port block leases: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+      try { await delay(15_000, undefined, { signal }); }
+      catch (cause) { if (!signal.aborted) throw cause; }
+    }
+  } });
+
+  async function describeHolders(records: Awaited<ReturnType<typeof listenerRecords>>, ports: Set<number>) {
+    const environments = await projectEnvironments(bb, null);
+    return Promise.all(records.filter((l) => ports.has(l.port)).slice(0, 40).map(async (listener) => {
+      const cwd = await processCwd(listener.pid);
+      const environment = environments.filter((e) => cwd === e.path || cwd?.startsWith(`${e.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
+      const assignment = environment ? await bb.storage.kv.get<Assignment>(`assignment:${environment.id}:${listener.port}`) : undefined;
+      const threadId = assignment?.threadId ?? environment?.threads[0]?.id;
+      return `Port ${listener.port}: ${listener.processName} (PID ${listener.pid}), thread ${threadId ?? "unknown"}${threadId && !assignment ? " (inferred from environment)" : ""}${assignment ? "" : "; unmanaged — use bb dev-servers adopt --port " + listener.port + " from its thread"}`;
+    }));
+  }
 
   bb.rpc.register(rpcContract, {
     list: async ({ projectId }) => ({ servers: await listServers(bb, projectId, await persistent.reservedPorts()), scannedAt: Date.now() }),
@@ -550,24 +535,91 @@ export default async function plugin(bb: BbPluginApi) {
           const thread = projectThreads(project).find((row) => row.id === context.threadId);
           if (!thread?.environmentId) return { exitCode: 2, stderr: "This thread has no environment.\n" };
           const reserved = await persistent.reservedPorts();
-          const occupied = new Set((await discoverListeners(reserved)).map((listener) => listener.port));
-          const base = input.options.port ?? (await assignBlock(bb, thread.environmentId, occupied, config, reserved))?.base ?? null;
-          if (base === null) return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are held or reserved. Delete a worktree to release its block or widen the plugin's port range.\n` };
-          const { command, ports, overrun } = expandPorts(commandTemplate, base, config.blockSize);
-          if (overrun !== null) return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${config.blockSize}-port block.\n` };
-          const clash = [base, ...ports].find((candidate) => reserved.has(candidate)) ?? ports.find((candidate) => occupied.has(candidate));
-          if (clash !== undefined) return { exitCode: 1, stderr: `Port ${clash} is already in use or reserved by a persistent server.\n` };
+          const listeners = await listenerRecords();
+          const occupied = new Set(listeners.map((listener) => listener.port));
+          const block = input.options.port === undefined ? await assignBlock(bb, thread.environmentId, occupied, config, reserved) : null;
+          const base = input.options.port ?? block?.base ?? null;
+          if (base === null) {
+            const inRange = new Set([...occupied].filter((p) => p >= config.portBase && p <= lastPort(config)));
+            const holders = await describeHolders(listeners, inRange);
+            const definitions = (await persistent.list(0)).filter((s) => s.port >= config.portBase && s.port <= lastPort(config));
+            const pending: string[] = [];
+            for (const key of await bb.storage.kv.list("assignment:")) {
+              const assignment = await bb.storage.kv.get<Assignment>(key);
+              const held = assignment && await bb.storage.kv.get<Block>(`block:${assignment.environmentId}`);
+              if (assignment?.terminalId && held && blockContains(held, assignment.port, config) && !occupied.has(assignment.port)) pending.push(`Port ${assignment.port}: terminal ${assignment.terminalId}, thread ${assignment.threadId ?? "unknown"} (no listener yet; terminal lease retained)`);
+            }
+            return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are active or reserved. Stop an unused server, or adjust blockSize/blockCount within 59xx.\n${holders.concat(pending.slice(0, 40), definitions.map((s) => `Port ${s.port}: persistent ${s.name} (${s.state})`)).join("\n")}\n` };
+          }
+          const size = block?.size ?? config.blockSize;
+          const { command, ports, overrun } = expandPorts(commandTemplate, base, size);
+          if (overrun !== null) {
+            await reclaimIdleBlocks(bb, occupied, config);
+            return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${size}-port block.\n` };
+          }
+          const requested = ports.length ? ports : [base];
+          const clash = [base, ...ports].find((candidate) => reserved.has(candidate)) ?? requested.find((candidate) => occupied.has(candidate));
+          if (clash !== undefined) {
+            await reclaimIdleBlocks(bb, occupied, config);
+            const detail = reserved.has(clash) ? [`Port ${clash}: reserved by a persistent server`] : await describeHolders(listeners, new Set([clash]));
+            return { exitCode: 1, stderr: `Port ${clash} is already in use or reserved.\n${detail.join("\n")}\n` };
+          }
+          for (const candidate of new Set(requested)) {
+            const holder = await managedPortHolder(bb, thread.environmentId, candidate);
+            if (holder) return { exitCode: 1, stderr: `Port ${candidate}: managed terminal ${holder.terminalId} (${holder.status}), thread ${holder.threadId ?? "unknown"} has not released its startup lease.\n` };
+          }
           const port = ports[0] ?? base;
           const terminal = await bb.sdk.terminals.create({
             cols: 120, rows: 32, scope: { kind: "thread", threadId: context.threadId! },
             start: { mode: "command", command }, title: `Dev server · ${port}`,
           });
-          await bb.storage.kv.set(`assignment:${thread.environmentId}:${port}`, {
-            environmentId: thread.environmentId, port, terminalId: terminal.id, command, threadId: context.threadId,
+          for (const assignedPort of new Set(requested)) await bb.storage.kv.set(`assignment:${thread.environmentId}:${assignedPort}`, {
+            environmentId: thread.environmentId, port: assignedPort, terminalId: terminal.id, command, threadId: context.threadId,
           } satisfies Assignment);
           return { exitCode: 0, stdout: input.options.json
             ? `${JSON.stringify({ command, base, ports, terminalId: terminal.id })}\n`
-            : `Started ${command}\nBlock: ${base}-${base + config.blockSize - 1}\nPorts: ${ports.join(", ")}\nTerminal: ${terminal.id}\n` };
+            : `Started ${command}\nBlock: ${base}-${base + size - 1}\nPorts: ${ports.join(", ")}\nTerminal: ${terminal.id}\n` };
+        });
+      },
+    }),
+    adopt: cliCommand({
+      summary: "Associate a manually started listener with this thread and lease its port block",
+      options: { port: { type: "integer", required: true, min: 1, max: 65535, description: "Existing listening port in the configured thread range" }, json },
+      async run(input, context) {
+        if (!context.projectId || !context.threadId) return { exitCode: 2, stderr: "Adopt requires the server's BB project thread.\n" };
+        return persistent.exclusive(async () => {
+          const parsed = parsePortConfig(await settings.get());
+          if (!parsed.config) return { exitCode: 2, stderr: `${parsed.error}\n` };
+          const config = parsed.config;
+          const projects = await bb.sdk.projects.list({ include: "threads" });
+          const thread = projectThreads(projects.find((p) => p.id === context.projectId)).find((t) => t.id === context.threadId);
+          if (!thread?.environmentId) return { exitCode: 2, stderr: "This thread has no environment.\n" };
+          const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+          if (!environment.path) return { exitCode: 2, stderr: "This environment has no directory.\n" };
+          const path = await realpath(environment.path);
+          const listeners = await listenerRecords();
+          const port = input.options.port;
+          const prior = await bb.storage.kv.get<Block>(`block:${environment.id}`);
+          const base = prior && blockContains(prior, port, config) ? prior.base : blockBase(config, Math.floor((port - config.portBase) / config.blockSize));
+          const size = prior && blockContains(prior, port, config) ? blockSize(prior, config) : config.blockSize;
+          const inBlock = listeners.filter((l) => l.port >= base && l.port < base + size);
+          if (!inBlock.some((l) => l.port === port)) return { exitCode: 1, stderr: `Nothing is listening on port ${port}.\n` };
+          for (const listener of inBlock) {
+            const cwd = await processCwd(listener.pid);
+            const resolved = cwd ? await realpath(cwd).catch(() => cwd) : null;
+            if (resolved !== path && !resolved?.startsWith(`${path}/`)) return { exitCode: 1, stderr: `Cannot adopt a block containing another environment's process.\n${(await describeHolders(listeners, new Set([listener.port]))).join("\n")}\n` };
+          }
+          const block = await adoptBlock(bb, environment.id, port, new Set(listeners.map((l) => l.port)), config, await persistent.reservedPorts());
+          const listener = inBlock.find((l) => l.port === port)!;
+          const key = `assignment:${environment.id}:${port}`;
+          const assignment = await bb.storage.kv.get<Assignment>(key);
+          if (!assignment?.terminalId) await bb.storage.kv.set(key, {
+            environmentId: environment.id, port, terminalId: null,
+            command: await processCommand(listener.pid) ?? listener.processName, threadId: context.threadId,
+          } satisfies Assignment);
+          const result = { port, pid: listener.pid, base: block.base, size: block.size, threadId: context.threadId };
+          return { exitCode: 0, stdout: input.options.json ? `${JSON.stringify(result)}\n`
+            : `Adopted ${listener.processName} (PID ${listener.pid}) on ${port} for thread ${context.threadId}.\nThe existing process keeps its lifetime; adoption does not create a terminal or restart it.\n` };
         });
       },
     }),

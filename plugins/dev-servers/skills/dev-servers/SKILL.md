@@ -11,8 +11,11 @@ When starting a dev server that the user may keep running, use the Dev Servers p
 bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
-- By default, each worktree owns a block of 10 consecutive ports, held for as long as the worktree
-  exists. Nine blocks start at 5910 (5910-5919, 5920-5929, …, 5990-5999). Port 5900 is excluded.
+- By default, an environment gets five consecutive ports when its first server starts.
+  Eighteen blocks cover 5910–5999; port 5900 is excluded. Permanent project checkouts
+  and idle worktrees hold no block. After the last listener and managed terminal exit,
+  the block is released within 15 seconds or before the next allocation. Ports can
+  change after stopping every server, so always expand the placeholders again.
 - The plugin settings `portBase`, `blockSize`, and `blockCount` control the allocation range.
 - `{port}` is the block's base — use it for the app's dev server. `{port+1}`, `{port+2}` … are the
   other slots in the same block; run a second service in the worktree on one of those rather than
@@ -21,6 +24,21 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 - Pass `--port <number>` only when the project explicitly requires a fixed port. It bypasses the
   blocks entirely — offsets resolve against it and nothing is reserved.
 - Use `bb dev-servers list` to inspect servers already running in project worktrees. Servers started another way can still be discovered, but their terminal association may be unavailable.
+- Allocation checks **all TCP listeners**, including non-HTML services. A running or
+  starting managed terminal holds its block before binding. An inspection failure
+  keeps that lease until its state can be checked. Occupied-port errors identify the
+  process, PID and linked thread (or say the thread is unknown). Stopped persistent
+  definitions still reserve their fixed ports.
+- Adopt an existing manually started server from its own project thread:
+  `bb dev-servers adopt --port 5910 --json`. This records the thread association and
+  leases its block without restarting the process or changing its lifetime. The
+  process's cwd must belong to that environment, and the block must contain no
+  other environment's listeners or persistent reservation. To give it automatic
+  startup and crash recovery, use persistent promotion instead.
+- Running blocks from the old ten-port configuration keep their full size until
+  all their servers stop. New allocations use the current settings. Legacy
+  explicitly saved settings are preserved; if still using them, set `blockSize` to `5` and
+  `blockCount` to `18`, keeping `portBase` at `5910`.
 
 ## Persistent servers
 

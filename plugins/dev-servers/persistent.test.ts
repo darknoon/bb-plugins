@@ -146,13 +146,14 @@ describe("plugin wire contracts and reservations", () => {
     host.harness.sdk.stub("projects.list", async () => [{ id: "p", name: "Project" }]);
     host.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "t", environmentId: "env", projectId: "p" })]);
     host.harness.sdk.stub("environments.get", async () => ({ id: "env", path: "/durable", status: "ready", hostId: "host", branchName: "branch", name: "Worktree" }));
+    host.harness.sdk.stub("environments.list", async () => [{ id: "env", status: "ready" }]);
     const occupied = new Set([5910, 5920, 5930, 5940, 5950, 5960, 5970, 5980]);
     expect(await assignBlock(host.bb, "env", occupied, config, new Set([5995]))).toBeNull();
     const assigned = await assignBlock(host.bb, "env", new Set(), config, new Set([5915]));
     expect(assigned?.base).toBe(5920);
     // Another thread server in the same block keeps the original allocation.
     expect((await assignBlock(host.bb, "env", new Set([5920]), config, new Set([5915])))?.base).toBe(5920);
-    await expect(assignBlock(host.bb, "env", new Set(), config, new Set([5925]))).rejects.toThrow("overlaps");
+    await expect(assignBlock(host.bb, "env", new Set([5920]), config, new Set([5925]))).rejects.toThrow("overlaps");
   });
 
   test("CLI works without a thread, validates flags and persists stop intent across reload", async () => {
@@ -183,7 +184,9 @@ describe("plugin wire contracts and reservations", () => {
     host.harness.inspection.sdk.stub("environments.list", async () => [{ id: "worktree", path: cwd, status: "ready", workspaceProvisionType: "managed-worktree" }]);
     await expect(add("worktree", next)).rejects.toThrow("durable checkout");
     host.harness.inspection.sdk.stub("environments.list", async () => [{ id: "live", path: "/other", status: "ready", workspaceProvisionType: "managed-worktree" }]);
-    await host.bb.storage.kv.set("block:live", { environmentId: "live", index: 8, base: 5990 });
+    await host.bb.storage.kv.set("block:live", { environmentId: "live", index: 8, base: 5990, size: 10 });
+    await host.bb.storage.kv.set("assignment:live:5995", { environmentId: "live", port: 5995, terminalId: "starting", command: "harbor", threadId: "live-thread" });
+    host.harness.inspection.sdk.stub("terminals.list", async () => ({ sessions: [{ id: "starting", status: "starting" }] }));
     await expect(add("harbor", 5995)).rejects.toThrow("live worktree block");
   });
 
