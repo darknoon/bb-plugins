@@ -1342,7 +1342,18 @@ export default async function plugin(bb: BbPluginApi) {
         const post = await createPost(agentActor(ctx), target, body, as ?? null);
         const unreachable = unreachableMentions(body);
         const note = unreachable.length ? ` Note: ${unreachable.map((h) => `@${h}`).join(", ")} ${unreachable.length === 1 ? "is" : "are"} archived and not woken.` : "";
-        return `Posted to #${target.name} as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).${note}`;
+        // A post that mentions someone or asks a question expects an answer in this channel. Agents
+        // forgot to watch for it (lighthouse missed Andrew's reply on 2026-10-15), so posting one
+        // arms the maximum watch for the poster, keeping any longer watch and its reaction setting.
+        let watched = "";
+        if (/@[\w-]+|\?/.test(body)) {
+          const existing = db.prepare(`SELECT until, wake_on_reactions FROM watches WHERE member_id = ? AND channel_id = ?`).get(post.memberId, target.id) as { until: number; wake_on_reactions: number } | undefined;
+          if (!existing || existing.until < Date.now() + WATCH_MAX_MINUTES * 60_000 - 60_000) {
+            setWatch(post.memberId, target.id, WATCH_MAX_MINUTES, existing?.wake_on_reactions === 1);
+          }
+          watched = ` Watching #${target.name} for replies for 8 hours; a reply wakes this thread.`;
+        }
+        return `Posted to #${target.name} as @${post.handle}${post.asRole ? `/${post.asRole}` : ""} (id ${post.id}).${note}${watched}`;
       } catch (cause) {
         return toolError(cause);
       }
