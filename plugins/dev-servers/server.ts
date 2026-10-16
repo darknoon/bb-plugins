@@ -7,12 +7,14 @@ import { z } from "zod";
 import { PersistentSupervisor, persistentInputSchema, persistentServerSchema } from "./persistent";
 import { adoptBlock, assignBlock, blockBase, blockContains, blockSize, lastPort, managedPortHolder, reclaimIdleBlocks, type Assignment, type Block, type PortConfig } from "./port-blocks";
 import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "./port-policy";
+import { defaultServerName, serverNameSchema, shortServerName } from "./names";
 export { assignBlock } from "./port-blocks";
 
 const execFile = promisify(execFileCallback);
 
 const terminalSchema = z.object({ id: z.string(), title: z.string(), status: z.string() });
 const serverSchema = z.object({
+  name: serverNameSchema,
   projectId: z.string(),
   projectName: z.string(),
   environmentId: z.string(),
@@ -25,6 +27,7 @@ const serverSchema = z.object({
   command: z.string().nullable(),
   connectUrl: z.string().url().nullable(),
   tailnetUrl: z.string().url().nullable(),
+  tailnetDescription: serverNameSchema.nullable(),
   threadIds: z.array(z.string()),
   thread: z.object({ id: z.string(), title: z.string() }).nullable(),
   terminal: terminalSchema.nullable(),
@@ -69,7 +72,7 @@ type Listener = {
   cwd: string;
   command: string | null;
 };
-type ProjectThread = { id: string; environmentId: string | null };
+type ProjectThread = { id: string; environmentId: string | null; title?: string | null; titleFallback?: string | null };
 
 type TailscaleStatus = {
   BackendState?: string;
@@ -347,7 +350,9 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
   const servers = await Promise.all(matched.map(async ({ listener, environment }) => {
     const assignment = assignments.get(`${environment.id}:${listener.port}`) ?? null;
     const association = await terminalForPort(bb, environment, listener.port, assignment);
+    const thread = (assignment?.threadId ? environment.threads.find((t) => t.id === assignment.threadId) : null) ?? environment.threads[0] ?? null;
     return {
+      name: typeof assignment?.name === "string" ? shortServerName(assignment.name) : defaultServerName({ threadTitle: thread?.title, projectName: environment.projectName, command: listener.command }),
       projectId: environment.projectId,
       projectName: environment.projectName,
       environmentId: environment.id,
@@ -360,9 +365,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
       command: association.terminal?.status === "running" ? assignment?.command ?? listener.command : listener.command,
       hostId: environment.hostId,
       threadIds: environment.threads.map((thread) => thread.id),
-      thread: (assignment?.threadId
-        ? environment.threads.find((thread) => thread.id === assignment.threadId)
-        : null) ?? environment.threads[0] ?? null,
+      thread,
       terminal: association.terminal ? {
         id: association.terminal.id,
         title: association.terminal.title,
@@ -410,11 +413,13 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
       ...server,
       connectUrl: connectUrlByServer.get(`${hostId}:${server.port}`) ?? null,
       tailnetUrl: tailnetUrlByPort.get(server.port) ?? null,
+      tailnetDescription: tailnetUrlByPort.has(server.port) ? server.name : null,
     };
   });
 }
 
 export default async function plugin(bb: BbPluginApi) {
+  bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: 'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers.' }));
   const settings = bb.settings.define({
     portBase: {
       type: "string",
@@ -508,6 +513,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const json = { type: "boolean", description: "Emit JSON" } as const;
+  const nameOption = { type: "string", description: 'Short purpose label, at most 24 characters (e.g. "icon grader"); defaults to the thread title or project/script' } as const;
+  async function resolveName(name: string | undefined, command: string | null, projectName?: string, thread?: ProjectThread, cwd?: string) {
+    if (name !== undefined) return serverNameSchema.parse(name);
+    let title = thread?.title || thread?.titleFallback;
+    if (!title && thread) {
+      try { const full = await bb.sdk.threads.get({ threadId: thread.id }); title = full.title || full.titleFallback; }
+      catch { /* The project/script remains meaningful if thread lookup is unavailable. */ }
+    }
+    return defaultServerName({ threadTitle: title, projectName, cwd, command });
+  }
   const commands = {
     list: cliCommand({
       summary: "List discovered thread dev servers", options: { json },
@@ -519,6 +534,7 @@ export default async function plugin(bb: BbPluginApi) {
     start: cliCommand({
       summary: "Start a dev server in a thread terminal",
       options: {
+        name: nameOption,
         command: { type: "string", required: true, description: "Foreground command; use {port}, {port+N}" },
         port: { type: "integer", min: 1, max: 65535, description: "Explicit fixed port (bypasses worktree blocks)" },
         json,
@@ -535,6 +551,7 @@ export default async function plugin(bb: BbPluginApi) {
           const project = projects.find((row) => row.id === context.projectId);
           const thread = projectThreads(project).find((row) => row.id === context.threadId);
           if (!thread?.environmentId) return { exitCode: 2, stderr: "This thread has no environment.\n" };
+          const name = await resolveName(input.options.name, commandTemplate, project?.name, thread);
           const reserved = await persistent.reservedPorts();
           const listeners = await listenerRecords();
           const occupied = new Set(listeners.map((listener) => listener.port));
@@ -575,28 +592,30 @@ export default async function plugin(bb: BbPluginApi) {
           const port = ports[0] ?? base;
           const terminal = await bb.sdk.terminals.create({
             cols: 120, rows: 32, scope: { kind: "thread", threadId: context.threadId! },
-            start: { mode: "command", command }, title: `Dev server · ${port}`,
+            start: { mode: "command", command }, title: `${name} · ${port}`,
           });
           for (const assignedPort of new Set(requested)) await bb.storage.kv.set(`assignment:${thread.environmentId}:${assignedPort}`, {
-            environmentId: thread.environmentId, port: assignedPort, terminalId: terminal.id, command, threadId: context.threadId,
+            name, environmentId: thread.environmentId, port: assignedPort, terminalId: terminal.id, command, threadId: context.threadId,
           } satisfies Assignment);
           return { exitCode: 0, stdout: input.options.json
-            ? `${JSON.stringify({ command, base, ports, terminalId: terminal.id })}\n`
-            : `Started ${command}\nBlock: ${base}-${base + size - 1}\nPorts: ${ports.join(", ")}\nTerminal: ${terminal.id}\n` };
+            ? `${JSON.stringify({ name, command, base, ports, terminalId: terminal.id })}\n`
+            : `Started ${name}: ${command}\nBlock: ${base}-${base + size - 1}\nPorts: ${ports.join(", ")}\nTerminal: ${terminal.id}\n` };
         });
       },
     }),
     adopt: cliCommand({
       summary: "Associate a manually started listener with this thread and lease its port block",
-      options: { port: { type: "integer", required: true, min: 1, max: 65535, description: "Existing listening port in the configured thread range" }, json },
+      options: { name: nameOption, port: { type: "integer", required: true, min: 1, max: 65535, description: "Existing listening port in the configured thread range" }, json },
       async run(input, context) {
         if (!context.projectId || !context.threadId) return { exitCode: 2, stderr: "Adopt requires the server's BB project thread.\n" };
         return persistent.exclusive(async () => {
+          if (input.options.name !== undefined) serverNameSchema.parse(input.options.name);
           const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
           if (!parsed.config) return { exitCode: 2, stderr: `${parsed.error}\n` };
           const config = parsed.config;
           const projects = await bb.sdk.projects.list({ include: "threads" });
-          const thread = projectThreads(projects.find((p) => p.id === context.projectId)).find((t) => t.id === context.threadId);
+          const project = projects.find((p) => p.id === context.projectId);
+          const thread = projectThreads(project).find((t) => t.id === context.threadId);
           if (!thread?.environmentId) return { exitCode: 2, stderr: "This thread has no environment.\n" };
           const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
           if (!environment.path) return { exitCode: 2, stderr: "This environment has no directory.\n" };
@@ -618,11 +637,14 @@ export default async function plugin(bb: BbPluginApi) {
           const listener = inBlock.find((l) => l.port === port)!;
           const key = `assignment:${environment.id}:${port}`;
           const assignment = await bb.storage.kv.get<Assignment>(key);
-          if (!assignment?.terminalId) await bb.storage.kv.set(key, {
+          const command = await processCommand(listener.pid) ?? listener.processName;
+          const name = input.options.name === undefined && assignment?.name ? shortServerName(assignment.name) : await resolveName(input.options.name, command, project?.name, thread);
+          await bb.storage.kv.set(key, assignment?.terminalId ? { ...assignment, name } : {
+            name,
             environmentId: environment.id, port, terminalId: null,
-            command: await processCommand(listener.pid) ?? listener.processName, threadId: context.threadId,
+            command, threadId: context.threadId,
           } satisfies Assignment);
-          const result = { port, pid: listener.pid, base: block.base, size: block.size, threadId: context.threadId };
+          const result = { name, port, pid: listener.pid, base: block.base, size: block.size, threadId: context.threadId };
           return { exitCode: 0, stdout: input.options.json ? `${JSON.stringify(result)}\n`
             : `Adopted ${listener.processName} (PID ${listener.pid}) on ${port} for thread ${context.threadId}.\nThe existing process keeps its lifetime; adoption does not create a terminal or restart it.\n` };
         });
@@ -631,7 +653,7 @@ export default async function plugin(bb: BbPluginApi) {
     "persist add": cliCommand({
       summary: "Register a machine-local persistent foreground server (no thread required)",
       options: {
-        name: { type: "string", required: true, description: "Unique name (1–64 letters, numbers, ._- )" },
+        name: nameOption,
         cwd: { type: "string", aliases: ["server-cwd", "directory"], required: true, description: "Absolute directory on the bb SERVER machine, outside managed worktrees" },
         command: { type: "string", required: true, description: "Foreground shell command using the fixed port" },
         port: { type: "integer", required: true, min: 5910, max: 65535, description: "Fixed port outside active worktree blocks and infrastructure denylist; prefer 6360–6378" },
@@ -645,9 +667,12 @@ export default async function plugin(bb: BbPluginApi) {
         json,
       },
       constraints: [{ kind: "requires", option: "adopt-tailnet-rule", needs: ["tailnet"] }],
-      async run({ options: o }) {
+      async run({ options: o }, context) {
+        const project = o.name === undefined && context.projectId ? (await bb.sdk.projects.list({ include: "threads" })).find((p) => p.id === context.projectId) : undefined;
+        const thread = projectThreads(project).find((t) => t.id === context.threadId);
+        const name = await resolveName(o.name, o.command, project?.name, thread, o.cwd);
         const server = await persistent.add(persistentInputSchema.parse({
-          name: o.name, cwd: o.cwd, command: o.command, port: o.port, enabled: !o.stopped,
+          name, cwd: o.cwd, command: o.command, port: o.port, enabled: !o.stopped,
           tailnet: o.tailnet, adoptTailnetRule: o["adopt-tailnet-rule"],
           health: { path: o["health-path"], status: o["health-status"], contentType: o["health-content-type"], bodyIncludes: o["health-body"] },
         }));

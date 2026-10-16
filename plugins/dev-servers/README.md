@@ -14,11 +14,19 @@ port, process, terminal association, and preview workflow.
 Agents can start a server in a BB terminal with a stable port block:
 
 ```sh
-bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
+bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
 Use `{port+1}` through `{port+4}` for additional services in the same
 environment with the default five-port block.
+
+Always pass a short purpose label with `--name`, including for adoption and
+persistent registration. Names allow spaces and are capped at 24 characters;
+longer explicit names are rejected with an error. The side panel, chooser and
+preview tabs show the name first, with port and thread as secondary context.
+`bb dev-servers list` includes `name`. Without one, the plugin uses the trimmed
+thread title, or a project/directory plus script label such as `fieldlabel dev`.
+The plugin also supplies this naming instruction to agents.
 
 ## Persistent servers
 
@@ -100,7 +108,7 @@ keeps its lease. Conflict errors name the listening process, PID and linked
 thread, and flag unmanaged listeners. To associate a manually started server:
 
 ```sh
-bb dev-servers adopt --port 5910 --json
+bb dev-servers adopt --name "icon grader" --port 5910 --json
 ```
 
 Run adoption from the server's own project thread. It leases the block and
@@ -136,6 +144,18 @@ hole. Explicit ports and offsets, adoption, persistent startup and private
 Serve creation enforce the same policy. Old forbidden persistent definitions
 are disabled, remain removable, and have their exact owned private rule cleaned
 up. IPv4/IPv6 and non-HTTP listeners protect ports before a new server starts.
+
+Persistent names follow the same 24-character cap and may contain spaces.
+Quote them in control commands, e.g. `bb dev-servers persist restart "icon grader"`.
+When no name is supplied, CLI thread context supplies a title; other callers
+use the directory and script. Legacy longer identifiers remain valid control
+targets, with a bounded `displayName` for the UI.
+
+The plugin records the short name in owned rule metadata and returns it as
+`tailnetDescription` alongside a tailnet URL. Tailscale's native
+[Serve configuration](https://github.com/tailscale/tailscale/blob/main/ipn/serve.go)
+has no per-rule description field, so labels are shown in Dev Servers and its
+CLI output; the native proxy target and access scope keep their normal meaning.
 
 ## Current scope
 

@@ -32,6 +32,7 @@ const PENDING_OPEN_PREFIX = "bb-dev-servers:pending-open:";
 const PENDING_OPEN_TTL_MS = 30_000;
 
 type Server = {
+  name: string;
   projectId: string;
   projectName: string;
   environmentId: string;
@@ -81,7 +82,7 @@ function isServerForThread(server: Server, threadId: string) {
 }
 
 function serverTitle(server: Server) {
-  return `${server.branchName ?? server.environmentName} · :${server.port}`;
+  return `${server.name} · :${server.port}`;
 }
 
 function serverUrl(server: Server) {
@@ -181,7 +182,7 @@ function ServerChoice({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">
-            {server.branchName ?? server.environmentName}
+            {server.name}
           </span>
           {currentThread ? (
             <span className="shrink-0 rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -193,7 +194,7 @@ function ServerChoice({
           {server.projectName}{server.thread ? ` · ${server.thread.title}` : " · No linked chat"}
         </div>
       </div>
-      <code className="shrink-0 text-sm font-medium tabular-nums">:{server.port}</code>
+      <code className="shrink-0 text-xs tabular-nums text-muted-foreground">:{server.port}</code>
     </button>
   );
 }
@@ -523,9 +524,16 @@ function DevServersPanel() {
               </span>
             </div>
             {project.servers.map((server) => (
-              <div key={`${server.environmentId}:${server.port}`} className="border-b border-border px-4 py-3">
+              <article key={`${server.environmentId}:${server.port}`} className="border-b border-border px-4 py-3" aria-label={`Thread server ${server.name}`}>
                 <div className="flex min-w-0 items-center gap-2">
-                  <code className="shrink-0 text-base font-medium tabular-nums">:{server.port}</code>
+                  <h3 className="min-w-0 flex-1 truncate text-sm font-medium">{server.name}</h3>
+                  <ServerOpenButtons server={server} onOpen={openInPanel} />
+                  {server.command ? <Button size="sm" variant="outline" onClick={() => {
+                    setPromotion({ command: server.command!, port: server.port, name: server.name });
+                  }}>Promote</Button> : null}
+                </div>
+                <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <code className="shrink-0 tabular-nums">:{server.port}</code>
                   <div className="min-w-0 flex-1">
                     {server.thread ? (
                       <button
@@ -541,13 +549,9 @@ function DevServersPanel() {
                       <span className="text-xs text-muted-foreground">No chat found</span>
                     )}
                   </div>
-                  <ServerOpenButtons server={server} onOpen={openInPanel} />
-                  {server.command ? <Button size="sm" variant="outline" onClick={() => {
-                    setPromotion({ command: server.command!, port: server.port, name: `${server.projectName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-")}-${server.port}`.slice(0, 64) });
-                  }}>Promote</Button> : null}
                 </div>
                 <div
-                  className="mt-2 flex min-w-0 items-center gap-1.5 text-sm font-medium"
+                  className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
                   title={server.branchName ?? server.environmentName}
                 >
                   <HugeiconsIcon
@@ -557,7 +561,7 @@ function DevServersPanel() {
                   />
                   <span className="truncate">{server.branchName ?? server.environmentName}</span>
                 </div>
-              </div>
+              </article>
             ))}
           </section>
         ))}

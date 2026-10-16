@@ -4,6 +4,7 @@ import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "
 export type PortConfig = { portBase: number; blockSize: number; blockCount: number };
 export type Block = { environmentId: string; index: number; base: number; size?: number };
 export type Assignment = {
+  name?: string;
   environmentId: string;
   port: number;
   terminalId: string | null;

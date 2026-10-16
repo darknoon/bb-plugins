@@ -9,6 +9,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { TailnetRules } from "./tailnet";
 import { assertPortAllowed, portPolicyError, runtimeInfrastructurePorts } from "./port-policy";
+import { defaultServerName, serverNameSchema, shortServerName } from "./names";
 
 const execFile = promisify(execFileCallback);
 
@@ -19,7 +20,7 @@ export const healthConfigSchema = z.object({
   bodyIncludes: z.string().max(1024).default(""),
 }).strict();
 export const persistentInputSchema = z.object({
-  name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/, "Use 1–64 letters, numbers, dots, underscores or hyphens"),
+  name: serverNameSchema.optional(),
   cwd: z.string().min(1).max(4096),
   command: z.string().trim().min(1).max(4096),
   port: z.number().int().min(5910).max(65535).refine((port) => portPolicyError(port) === null, { message: "Port is reserved for infrastructure" }),
@@ -31,6 +32,10 @@ export const persistentInputSchema = z.object({
 const exitSchema = z.object({ at: z.number(), code: z.number().nullable(), signal: z.string().nullable(), reason: z.string() });
 const logSchema = z.object({ at: z.number(), stream: z.enum(["stdout", "stderr", "supervisor"]), line: z.string() });
 export const persistentServerSchema = persistentInputSchema.extend({
+  // Keep pre-existing identifiers usable for controls while bounding their label.
+  name: z.string().min(1).max(64),
+  displayName: serverNameSchema,
+  tailnetDescription: serverNameSchema.nullable(),
   // Legacy forbidden definitions remain observable and removable after upgrade.
   port: z.number().int().min(1).max(65535),
   state: z.enum(["stopped", "starting", "running", "crashed", "restarting"]),
@@ -47,8 +52,9 @@ export const persistentServerSchema = persistentInputSchema.extend({
 export type PersistentInput = z.infer<typeof persistentInputSchema>;
 export type PersistentServer = z.infer<typeof persistentServerSchema>;
 const definitionSchema = persistentInputSchema.extend({
+  name: z.string().min(1).max(64),
   port: z.number().int().min(1).max(65535),
-  rule: z.object({ dnsName: z.string(), port: z.number(), proxy: z.string() }).nullable().default(null),
+  rule: z.object({ dnsName: z.string(), port: z.number(), proxy: z.string(), description: serverNameSchema.optional() }).nullable().default(null),
 });
 type Definition = z.infer<typeof definitionSchema>;
 type Exit = z.infer<typeof exitSchema>;
@@ -235,7 +241,8 @@ export class PersistentSupervisor {
     await this.initialize();
     return [...this.runtimes.values()].sort((a, b) => a.definition.name.localeCompare(b.definition.name)).map((r) => {
       const { rule, ...definition } = r.definition;
-      return { ...definition, state: r.state, pid: r.child?.pid ?? null, startedAt: r.startedAt,
+      return { ...definition, displayName: shortServerName(definition.name), tailnetDescription: rule ? shortServerName(definition.name) : null,
+        state: r.state, pid: r.child?.pid ?? null, startedAt: r.startedAt,
         uptimeMs: r.child && r.startedAt ? Date.now() - r.startedAt : 0,
         restartAt: r.restartAt, failures: r.failures, lastExit: r.lastExit, healthResult: r.healthResult,
         tailnetUrl: rule && r.state === "running" ? `https://${rule.dnsName}:${rule.port}/` : null,
@@ -265,7 +272,8 @@ export class PersistentSupervisor {
 
   async add(input: PersistentInput) {
     return this.exclusive(async () => {
-      const definition = definitionSchema.parse(persistentInputSchema.parse(input));
+      const parsed = persistentInputSchema.parse(input);
+      const definition = definitionSchema.parse({ ...parsed, name: parsed.name ?? defaultServerName({ cwd: parsed.cwd, command: parsed.command }) });
       assertPortAllowed(definition.port, runtimeInfrastructurePorts(this.bb));
       definition.command = definition.command.replaceAll("{port}", String(definition.port));
       if (this.runtimes.has(definition.name)) throw new Error(`Persistent server ${definition.name} already exists`);
@@ -277,7 +285,7 @@ export class PersistentSupervisor {
       await this.validateLocationAndPort(definition.cwd, definition.port);
       if (definition.adoptTailnetRule && !definition.tailnet) throw new Error("Adopting a Serve rule requires --tailnet");
       // Validate exposure now, but claim/create it only once a healthy process is running.
-      if (definition.tailnet) await this.rules.inspect(definition.port, definition.adoptTailnetRule);
+      if (definition.tailnet) await this.rules.inspect(definition.port, definition.adoptTailnetRule, null, shortServerName(definition.name));
       const r: Runtime = { definition, state: "stopped", child: null, done: Promise.resolve(), exit: null,
         lastExit: null, logs: [], failures: 0, startedAt: null, restartAt: null, healthySince: null,
         unhealthyCount: 0, lastProbe: 0, lastRuleCheck: 0, healthResult: null, dirty: false };
@@ -418,7 +426,7 @@ export class PersistentSupervisor {
     r.healthResult = await checkHealth(r.definition);
     if (r.healthResult.healthy) {
       if (r.definition.tailnet && (r.state !== "running" || Date.now() - r.lastRuleCheck >= 60_000)) {
-        const rule = await this.rules.inspect(r.definition.port, r.definition.adoptTailnetRule, r.definition.rule);
+        const rule = await this.rules.inspect(r.definition.port, r.definition.adoptTailnetRule, r.definition.rule, shortServerName(r.definition.name));
         // Durable claim precedes the external mutation, so a bb crash cannot orphan a rule.
         r.definition.rule = rule;
         await this.save(r);

@@ -147,7 +147,10 @@ test("concurrent wire starts reserve separate blocks before either server binds"
 
 test("the background lease service releases an idle block and shuts down promptly", async () => {
   const host = hostFor(["idle"]);
-  await host.bb.storage.kv.set("block:idle", { environmentId: "idle", index: 0, base: 5910 });
+  let port = 6360;
+  while (port <= 6368 && !(await portAvailable(port))) port++;
+  expect(port).toBeLessThanOrEqual(6368);
+  await host.bb.storage.kv.set("block:idle", { environmentId: "idle", index: 0, base: port, size: 1 });
   await plugin(host.bb);
   const service = host.harness.behavior.runService("port-block-leases");
   cleanups.push(async () => { service.controller.abort(); await service.done; });

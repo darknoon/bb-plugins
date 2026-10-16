@@ -1,9 +1,12 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { assertPortAllowed } from "./port-policy";
+import { serverNameSchema } from "./names";
 
 const execFile = promisify(execFileCallback);
-export type TailnetRule = { dnsName: string; port: number; proxy: string };
+// Native Tailscale Serve has no description field. This label is plugin-owned
+// metadata, alongside the exact native route used for safe ownership/cleanup.
+export type TailnetRule = { dnsName: string; port: number; proxy: string; description?: string };
 type ServeStatus = {
   TCP?: Record<string, { HTTPS?: boolean }>;
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
@@ -36,10 +39,10 @@ export class TailnetRules {
   private assertPrivate(serve: ServeStatus, rule: TailnetRule) {
     if (serve.AllowFunnel?.[`${rule.dnsName}:${rule.port}`]) throw new Error(`Port ${rule.port} has public Funnel enabled; persistent servers require tailnet-only access`);
   }
-  async inspect(port: number, adopt = false, owned: TailnetRule | null = null): Promise<TailnetRule> {
+  async inspect(port: number, adopt = false, owned: TailnetRule | null = null, description?: string): Promise<TailnetRule> {
     assertPortAllowed(port);
     const { dnsName, serve } = await this.status();
-    const rule = { dnsName, port, proxy: `http://127.0.0.1:${port}` };
+    const rule = { dnsName, port, proxy: `http://127.0.0.1:${port}`, ...(description === undefined ? {} : { description: serverNameSchema.parse(description) }) };
     this.assertPrivate(serve, rule);
     const occupied = serve.TCP?.[port] || Object.keys(serve.Web ?? {}).some((key) => key.endsWith(`:${port}`));
     if (occupied && (!this.matches(serve, rule) || (!adopt && owned?.dnsName !== dnsName))) {

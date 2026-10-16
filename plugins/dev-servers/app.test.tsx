@@ -9,6 +9,7 @@ let unmount: (() => void) | undefined;
 afterEach(() => { unmount?.(); unmount = undefined; });
 function viewer(): PersistentServer {
   return { ...persistentInputSchema.parse({ name: "harbor", cwd: "/durable", command: "harbor view --port 5995", port: 5995 }),
+    name: "harbor", displayName: "harbor", tailnetDescription: "harbor",
     state: "running", pid: 42, startedAt: Date.now() - 65_000, uptimeMs: 65_000, restartAt: null,
     failures: 0, lastExit: { at: Date.now(), code: 42, signal: null, reason: "Process exited" },
     healthResult: { healthy: true, checkedAt: Date.now(), message: "Expected Harbor response" },
@@ -44,7 +45,7 @@ test("left nav shows both sections, observable status and controls without a thr
 
 test("promotion asks for durable working directory and a new fixed port then registers the reviewed command", async () => {
   const definition = await loadPluginApp(app);
-  const threadServer = { projectId: "p", projectName: "Canvas", environmentId: "env", environmentName: "worktree", branchName: "feature", path: "/disposable/worktree",
+  const threadServer = { name: "icon grader", projectId: "p", projectName: "Canvas", environmentId: "env", environmentName: "worktree", branchName: "feature", path: "/disposable/worktree",
     port: 5910, pid: 10, processName: "node", command: "npm run dev -- --port 5910", connectUrl: null, tailnetUrl: null,
     threadIds: ["thread"], thread: { id: "thread", title: "Canvas thread" }, terminal: null, association: "managed" };
   const added: unknown[] = [];
@@ -54,9 +55,14 @@ test("promotion asks for durable working directory and a new fixed port then reg
   } });
   unmount = slot.lifecycle.unmount;
   fireEvent.click(await slot.findByRole("button", { name: "Promote" }));
+  const row = within(slot.getByRole("article", { name: "Thread server icon grader" }));
+  expect(row.getByRole("heading", { name: "icon grader", level: 3 })).toBeDefined();
+  expect(row.getByText(":5910")).toBeDefined();
   const form = within(slot.getByRole("form", { name: "Promote to persistent server" }));
   const cwd = form.getByLabelText("Working directory on this machine") as HTMLInputElement;
   expect(cwd.value).toBe("");
+  expect((form.getByLabelText("Name") as HTMLInputElement).value).toBe("icon grader");
+  expect((form.getByLabelText("Name") as HTMLInputElement).maxLength).toBe(24);
   expect((form.getByLabelText("Fixed port") as HTMLInputElement).value).toBe("6360");
   expect((form.getByLabelText("Command") as HTMLTextAreaElement).value).toContain("{port}");
   fireEvent.change(cwd, { target: { value: "/durable/canvas" } });

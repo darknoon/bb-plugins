@@ -7,8 +7,13 @@ description: Start thread dev servers and manage persistent machine servers with
 
 When starting a dev server that the user may keep running, use the Dev Servers plugin instead of a foreground shell command:
 
+**Always pass a short purpose name with `--name`, at most 24 characters**, for
+thread starts, adoption and persistent registration. Use labels such as
+`--name "icon grader"` so Andrew can see what a server is for in the sidebar.
+Spaces are allowed; quote multiword names. Explicit longer names are rejected.
+
 ```sh
-bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
+bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
 - By default, an environment gets five consecutive ports when its first server starts.
@@ -31,13 +36,16 @@ bb dev-servers start --command 'pnpm dev --port {port} --host 127.0.0.1'
 - Pass `--port <number>` only when the project explicitly requires a fixed port. It bypasses the
   blocks entirely — offsets resolve against it and nothing is reserved.
 - Use `bb dev-servers list` to inspect servers already running in project worktrees. Servers started another way can still be discovered, but their terminal association may be unavailable.
+- Lists include `name`; the side panel and preview chooser show it first, with
+  port and thread secondary. When omitted, names default to the thread title
+  trimmed to 24 characters, or project/directory plus script, e.g. `fieldlabel dev`.
 - Allocation checks **all TCP listeners**, including non-HTML services. A running or
   starting managed terminal holds its block before binding. An inspection failure
   keeps that lease until its state can be checked. Occupied-port errors identify the
   process, PID and linked thread (or say the thread is unknown). Stopped persistent
   definitions still reserve their fixed ports.
 - Adopt an existing manually started server from its own project thread:
-  `bb dev-servers adopt --port 5910 --json`. This records the thread association and
+  `bb dev-servers adopt --name "icon grader" --port 5910 --json`. This records the thread association and
   leases its block without restarting the process or changing its lifetime. The
   process's cwd must belong to that environment, and the block must contain no
   other environment's listeners or persistent reservation. To give it automatic
@@ -53,22 +61,26 @@ For viewers and tools that should survive the originating thread, register a
 foreground command with the machine supervisor:
 
 ```sh
-bb dev-servers persist add --name canvas \
+bb dev-servers persist add --name "canvas viewer" \
   --cwd /Users/andrew/Developer/canvas-viewer \
   --command 'npm run dev -- --host 127.0.0.1 --port {port}' \
   --port 6360 --health-body '<title>Canvas</title>' --tailnet
 bb dev-servers persist list --json
-bb dev-servers persist logs canvas --lines 40
-bb dev-servers persist restart canvas
-bb dev-servers persist stop canvas
-bb dev-servers persist start canvas
-bb dev-servers persist remove canvas
+bb dev-servers persist logs "canvas viewer" --lines 40
+bb dev-servers persist restart "canvas viewer"
+bb dev-servers persist stop "canvas viewer"
+bb dev-servers persist start "canvas viewer"
+bb dev-servers persist remove "canvas viewer"
 ```
 
 - These commands need no project or thread. They run on the **bb server
   machine**. `--cwd` (`--server-cwd` / `--directory`) always names an absolute
   path on that machine, including when the CLI caller is on an enrolled remote
   machine. Never assume the caller's cwd is the server's cwd.
+- Always pass the short `--name`. If omitted, a thread context supplies its
+  trimmed title; otherwise the directory and script supply a meaningful name.
+  Existing persistent identifiers longer than 24 characters remain usable for
+  controls; their `displayName` is trimmed for the UI. New names cannot exceed 24.
 - Use a durable checkout. Managed worktree paths, including symlinks into
   them, are refused. Review absolute paths in the command as well. The left
   Dev Servers tab's **Promote** form prepares a command with `{port}` and asks
@@ -114,6 +126,9 @@ bb dev-servers persist remove canvas
   Failed cleanup retains the ownership record for a retry; externally changed
   rules are left untouched. Tailscale must already be signed in; the plugin
   never starts an interactive login. `TAILSCALE_BIN` can select the executable.
+- Owned rule metadata and `tailnetDescription` include the short purpose name.
+  Native Tailscale Serve has no per-rule description field, so these labels
+  appear in the plugin beside the URL, rather than in `tailscale serve status`.
 - Use `--stopped` to prepare a definition without starting or claiming a route.
   The UI's unchecked “Start now” option does the same. Treat removal of an
   existing launchd job as a separate human-approved cutover. Harbor's procedure

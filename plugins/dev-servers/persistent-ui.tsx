@@ -28,7 +28,7 @@ export function PersistentForm({ promotion, onDone }: { promotion: Promotion | n
     setError(null);
     try {
       await rpc.call("persistentAdd", {
-        name: value("name"), cwd: value("cwd"), command: value("command"), port: Number(value("port")),
+        ...(value("name").trim() ? { name: value("name") } : {}), cwd: value("cwd"), command: value("command"), port: Number(value("port")),
         enabled: data.has("enabled"), tailnet: data.has("tailnet"), adoptTailnetRule: data.has("adopt"),
         health: { path: value("health-path"), status: Number(value("health-status")), contentType: value("content-type"), bodyIncludes: value("body") },
       });
@@ -42,7 +42,8 @@ export function PersistentForm({ promotion, onDone }: { promotion: Promotion | n
     <form onSubmit={(event) => void submit(event)} className="space-y-3 border-b border-border px-4 py-3" aria-label={promotion ? "Promote to persistent server" : "Add persistent server"}>
       <p className="text-sm font-medium">{promotion ? "Promote to persistent" : "Add persistent server"}</p>
       {promotion ? <p className="text-xs text-muted-foreground">Choose a durable checkout and a free fixed port. Update any worktree paths in the command. The thread server keeps running.</p> : null}
-      <label className="block text-xs">Name<input name="name" required maxLength={64} pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]*" defaultValue={promotion?.name} className={fieldClass} /></label>
+      <label className="block text-xs">Name<input name="name" maxLength={24} placeholder="icon grader" defaultValue={promotion?.name} className={fieldClass} /></label>
+      <p className="text-xs text-muted-foreground">Up to 24 characters. Leave blank to use the directory and script.</p>
       <label className="block text-xs">Working directory on this machine<input name="cwd" required placeholder="/Users/andrew/Developer/my-viewer" className={fieldClass} /></label>
       <label className="block text-xs">Command<textarea name="command" required defaultValue={command} placeholder="npm run dev -- --host 127.0.0.1 --port {port}" className={fieldClass} rows={3} /></label>
       <label className="block text-xs">Fixed port<input name="port" type="number" required min={5910} max={65535} defaultValue={DEFAULT_PERSISTENT_PORT} className={fieldClass} /></label>
@@ -76,9 +77,9 @@ function PersistentCard({ server, refresh }: { server: PersistentServer; refresh
     finally { setBusy(false); }
   }
   return (
-    <article className="space-y-2 border-b border-border px-4 py-3" aria-label={`Persistent server ${server.name}`}>
+    <article className="space-y-2 border-b border-border px-4 py-3" aria-label={`Persistent server ${server.displayName}`}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium">{server.name}</span><code className="text-xs">:{server.port}</code>
+        <span className="text-sm font-medium">{server.displayName}</span><code className="text-xs text-muted-foreground">:{server.port}</code>
         <span className={`ml-auto text-xs ${server.state === "crashed" ? "text-destructive" : "text-muted-foreground"}`}>{server.state}</span>
       </div>
       <div className="text-xs text-muted-foreground">Uptime {elapsed(server.uptimeMs)}{server.restartAt ? ` · Retry in ${elapsed(server.restartAt - Date.now())}` : ""}</div>
@@ -91,6 +92,7 @@ function PersistentCard({ server, refresh }: { server: PersistentServer; refresh
       </div>
       <details>
         <summary className="cursor-pointer text-xs text-muted-foreground">Details and recent logs</summary>
+        {server.tailnetDescription ? <p className="mt-2 text-xs text-muted-foreground">Private tailnet rule: {server.tailnetDescription}</p> : null}
         <p className="mt-2 break-all text-xs">{server.cwd}</p><pre className="mt-1 whitespace-pre-wrap break-all text-xs">{server.command}</pre>
         <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs">{server.logs.length ? server.logs.map((line) => `${new Date(line.at).toLocaleTimeString()} [${line.stream}] ${line.line}`).join("\n") : "No logs yet."}</pre>
         {!server.enabled ? <Button size="sm" variant="outline" className="mt-2" disabled={busy} onClick={() => void control("remove")}>Remove stopped server</Button> : null}
