@@ -99,6 +99,15 @@ createServer((_req, res) => res.end('managed inspector fixture')).listen(Number(
       }
     }
   }
+  // Managed ownership survives a command changing directory outside the checkout.
+  h.harness.inspection.sdk.stub("environments.get", async () => ({ id: "a", status: "ready", path: "/different/checkout", hostId: "host", name: "Checkout", branchName: null }));
+  const collision = await h.harness.behavior.runCli([
+    "start", "--name", "inspector collision", "--inspector-port", "{port+4}", "--command", "echo {port+2}",
+  ], { projectId: "p", threadId: "ta" });
+  expect(collision.exitCode).toBe(1);
+  expect(collision.stderr).toContain(`Port ${results[0].inspectorPort}`);
+  expect(collision.stderr).toContain("thread ta");
+  expect(collision.stderr).not.toContain("unmanaged");
 });
 
 test("invalid, shared, occupied, and pending inspector slots fail before another terminal starts", async () => {

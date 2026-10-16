@@ -496,10 +496,19 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function describeHolders(records: Awaited<ReturnType<typeof listenerRecords>>, ports: Set<number>) {
     const environments = await projectEnvironments(bb, null);
+    // Commands may cd outside their environment (e.g. a viewer for a separate
+    // directory). An active managed assignment is stronger evidence than cwd.
+    const managed = new Map<number, Assignment>();
+    for (const key of await bb.storage.kv.list("assignment:")) {
+      const assignment = await bb.storage.kv.get<Assignment>(key);
+      if (assignment?.terminalId && ports.has(assignment.port) && await managedPortHolder(bb, assignment.environmentId, assignment.port)) {
+        managed.set(assignment.port, assignment);
+      }
+    }
     return Promise.all(records.filter((l) => ports.has(l.port)).slice(0, 40).map(async (listener) => {
       const cwd = await processCwd(listener.pid);
       const environment = environments.filter((e) => cwd === e.path || cwd?.startsWith(`${e.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
-      const assignment = environment ? await bb.storage.kv.get<Assignment>(`assignment:${environment.id}:${listener.port}`) : undefined;
+      const assignment = managed.get(listener.port) ?? (environment ? await bb.storage.kv.get<Assignment>(`assignment:${environment.id}:${listener.port}`) : undefined);
       const threadId = assignment?.threadId ?? environment?.threads[0]?.id;
       return `Port ${listener.port}: ${listener.processName} (PID ${listener.pid}), thread ${threadId ?? "unknown"}${threadId && !assignment ? " (inferred from environment)" : ""}${assignment ? "" : "; unmanaged — use bb dev-servers adopt --port " + listener.port + " from its thread"}`;
     }));
