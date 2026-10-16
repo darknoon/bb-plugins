@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { createServer } from "node:net";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { adoptBlock, assignBlock, reclaimIdleBlocks } from "./port-blocks";
+import { adoptBlock, assignBlock, managedPortHolder, reclaimIdleBlocks } from "./port-blocks";
 import { portAvailable } from "./persistent";
 import plugin from "./server";
 
@@ -71,6 +71,39 @@ test("reclaims all eight idle live environments, including permanent checkouts, 
   for (const [i, id] of ids.entries()) await host.bb.storage.kv.set(`block:${id}`, { environmentId: id, index: i, base: 5910 + i * 10 });
   expect(await assignBlock(host.bb, "new", new Set(), { ...config, blockSize: 10, blockCount: 9 }, new Set([5995]))).toMatchObject({ base: 5910 });
   expect(await host.bb.storage.kv.list("block:")).toEqual(["block:new"]);
+});
+
+test("an exited terminal's stale 5960 lease is reclaimed despite a foreign listener, and start gets a free block", async () => {
+  const host = hostFor(["jsonl", "fieldlabel"]);
+  const grid = { portBase: 5960, blockSize: 10, blockCount: 2 };
+  await host.bb.storage.kv.set("block:jsonl", { environmentId: "jsonl", index: 5, base: 5960, size: 10 });
+  await host.bb.storage.kv.set("assignment:jsonl:5960", { environmentId: "jsonl", port: 5960, terminalId: "closed", threadId: "jsonl-thread", command: "bun dev --port 5960" });
+  await host.bb.storage.kv.set("assignment:jsonl:5961", { environmentId: "jsonl", port: 5961, terminalId: null, threadId: "jsonl-thread", command: "bun dev --port 5960" });
+  host.harness.inspection.sdk.stub("terminals.list", async () => ({ sessions: [{ id: "closed", status: "exited" }] }));
+  const block = await assignBlock(host.bb, "jsonl", new Set([5960]), grid, new Set(), async () => false);
+  expect(block).toMatchObject({ base: 5970, size: 10 });
+  expect(await host.bb.storage.kv.list("assignment:")).toEqual([]);
+});
+
+test("reconciliation checks orphan explicit/adopted assignments and global startup leases across environments", async () => {
+  const host = hostFor(["a", "b"]);
+  await host.bb.storage.kv.set("assignment:a:5960", { environmentId: "a", port: 5960, terminalId: "closed", threadId: "ta", command: "dev" });
+  await host.bb.storage.kv.set("assignment:a:5961", { environmentId: "a", port: 5961, terminalId: null, threadId: "ta", command: "dev" });
+  await host.bb.storage.kv.set("assignment:b:5962", { environmentId: "b", port: 5962, terminalId: "boot", threadId: "tb", command: "dev" });
+  host.harness.inspection.sdk.stub("terminals.list", async ({ scope }: { scope: { threadId: string } }) => ({ sessions: scope.threadId === "tb" ? [{ id: "boot", status: "starting" }] : [] }));
+  await reclaimIdleBlocks(host.bb, new Set([5960, 5961]), config, async () => false);
+  expect(await host.bb.storage.kv.list("assignment:")).toEqual(["assignment:b:5962"]);
+  expect(await managedPortHolder(host.bb, null, 5962)).toMatchObject({ threadId: "tb", status: "starting" });
+});
+
+test("10→5→10 settings changes never overlap retained live blocks", async () => {
+  const host = hostFor(["ten", "five", "new"]);
+  await host.bb.storage.kv.set("block:ten", { environmentId: "ten", index: 0, base: 5960, size: 10 });
+  const occupied = new Set([5960]);
+  const five = await assignBlock(host.bb, "five", occupied, { portBase: 5960, blockSize: 5, blockCount: 6 }, new Set());
+  expect(five).toMatchObject({ base: 5970, size: 5 });
+  occupied.add(five!.base);
+  expect(await assignBlock(host.bb, "new", occupied, { portBase: 5960, blockSize: 10, blockCount: 3 }, new Set())).toMatchObject({ base: 5980, size: 10 });
 });
 
 test("startup terminals hold blocks; exit releases the final lease and assignment", async () => {

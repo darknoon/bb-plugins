@@ -11,6 +11,9 @@ export type Assignment = {
   command: string;
   threadId?: string;
 };
+// null means ownership could not be established; inspection failures must not
+// turn a live adopted server into evidence that a block is free.
+export type ListenerOwnership = (port: number, environment: { id: string; path?: string | null }) => Promise<boolean | null>;
 export const blockBase = (config: PortConfig, index: number) => config.portBase + index * config.blockSize;
 export const lastPort = (config: PortConfig) => blockBase(config, config.blockCount - 1) + config.blockSize - 1;
 export const blockSize = (block: Block, config: PortConfig) => block.size
@@ -27,54 +30,75 @@ async function assignments(bb: BbPluginApi) {
   return rows.flatMap(({ key, value }) => value ? [{ key, value }] : []);
 }
 
-export async function managedPortHolder(bb: BbPluginApi, environmentId: string, port: number) {
-  const assignment = await bb.storage.kv.get<Assignment>(`assignment:${environmentId}:${port}`);
-  if (!assignment?.terminalId) return null;
-  try {
-    const { sessions } = await bb.sdk.terminals.list({ scope: assignment.threadId
-      ? { kind: "thread", threadId: assignment.threadId }
-      : { kind: "environment", environmentId },
-    });
-    const terminal = sessions.find((s) => s.id === assignment.terminalId);
-    return terminal && terminal.status !== "exited" ? { ...assignment, status: terminal.status } : null;
-  } catch {
-    return { ...assignment, status: "unknown" };
+export async function managedPortHolder(bb: BbPluginApi, environmentId: string | null, port: number) {
+  const candidates = environmentId
+    ? [await bb.storage.kv.get<Assignment>(`assignment:${environmentId}:${port}`)].filter((a): a is Assignment => !!a)
+    : (await assignments(bb)).map((row) => row.value).filter((a) => a.port === port);
+  for (const assignment of candidates) {
+    if (!assignment.terminalId) continue;
+    try {
+      const { sessions } = await bb.sdk.terminals.list({ scope: assignment.threadId
+        ? { kind: "thread", threadId: assignment.threadId }
+        : { kind: "environment", environmentId: assignment.environmentId },
+      });
+      const terminal = sessions.find((s) => s.id === assignment.terminalId);
+      if (terminal && terminal.status !== "exited") return { ...assignment, status: terminal.status };
+    } catch {
+      return { ...assignment, status: "unknown" };
+    }
   }
+  return null;
 }
 
 // No terminal events are available in the SDK. Sweep periodically and before allocation.
 // A managed terminal also protects the startup interval before its process binds a port.
-export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, config: PortConfig) {
-  const live = new Set<string>();
+export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, config: PortConfig, ownsListener?: ListenerOwnership) {
+  const live = new Map<string, { id: string; path?: string | null }>();
   for (let offset = 0; ; offset += 1000) {
     const page = await bb.sdk.environments.list({ limit: 1000, offset });
-    for (const environment of page) if (environment.status !== "destroyed") live.add(environment.id);
+    for (const environment of page) if (environment.status !== "destroyed") live.set(environment.id, environment);
     if (page.length < 1000) break;
   }
   const rows = await assignments(bb);
   const scopes = new Map<string, Promise<Set<string>>>();
+  const retained = new Set<string>();
+  // Reconcile every assignment, including explicit ports outside a block and
+  // old rows left behind by a settings change. A foreign listener never revives
+  // a closed managed terminal's lease.
+  for (const { key, value } of rows) {
+    const environment = live.get(value.environmentId);
+    let busy = false;
+    if (environment && value.terminalId) {
+      const scopeKey = value.threadId ? `thread:${value.threadId}` : `environment:${value.environmentId}`;
+      let sessions = scopes.get(scopeKey);
+      if (!sessions) {
+        sessions = bb.sdk.terminals.list({ scope: value.threadId
+          ? { kind: "thread", threadId: value.threadId }
+          : { kind: "environment", environmentId: value.environmentId },
+        }).then(({ sessions }) => new Set(sessions.filter((s) => s.status !== "exited").map((s) => s.id)));
+        scopes.set(scopeKey, sessions);
+      }
+      try { busy = (await sessions).has(value.terminalId); }
+      catch { busy = true; }
+    } else if (environment && occupied.has(value.port)) {
+      busy = !ownsListener || await ownsListener(value.port, environment) !== false;
+    }
+    if (busy) retained.add(key);
+    else await bb.storage.kv.delete(key);
+  }
   const active: Block[] = [];
   for (const key of await bb.storage.kv.list("block:")) {
     const saved = await bb.storage.kv.get<Block>(key);
     if (!saved) continue;
     const block = { ...saved, size: blockSize(saved, config) };
     const blockAssignments = rows.filter(({ value }) => value.environmentId === block.environmentId && blockContains(block, value.port, config));
-    let busy = [...occupied].some((port) => blockContains(block, port, config));
-    if (!busy && live.has(block.environmentId)) {
-      for (const { value } of blockAssignments) {
-        if (!value.terminalId) continue;
-        const scopeKey = value.threadId ? `thread:${value.threadId}` : `environment:${value.environmentId}`;
-        let sessions = scopes.get(scopeKey);
-        if (!sessions) {
-          sessions = bb.sdk.terminals.list({ scope: value.threadId
-            ? { kind: "thread", threadId: value.threadId }
-            : { kind: "environment", environmentId: value.environmentId },
-          }).then(({ sessions }) => new Set(sessions.filter((s) => s.status !== "exited").map((s) => s.id)));
-          scopes.set(scopeKey, sessions);
-        }
-        // Failure to inspect a terminal is not evidence that its process stopped.
-        try { busy = (await sessions).has(value.terminalId); }
-        catch { busy = true; }
+    let busy = blockAssignments.some(({ key }) => retained.has(key));
+    const environment = live.get(block.environmentId);
+    // Legacy blocks can predate assignment records. Preserve their actual own
+    // listeners, but not another environment's process in the same port span.
+    if (!busy && environment && blockAssignments.length === 0) {
+      for (const port of occupied) if (blockContains(block, port, config)) {
+        busy = !ownsListener || await ownsListener(port, environment) !== false;
         if (busy) break;
       }
     }
@@ -90,12 +114,15 @@ export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, 
   return active;
 }
 
-export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>) {
+export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership) {
   const infrastructure = runtimeInfrastructurePorts(bb);
   assertPortRange(config, infrastructure);
-  const active = await reclaimIdleBlocks(bb, occupied, config);
+  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
+    if (occupied.has(prior.base) && ownsListener && await ownsListener(prior.base, { id: environmentId }) === false) {
+      throw new Error(`Retained block ${prior.base}-${prior.base + prior.size! - 1} has another environment's listener on its base. Stop this environment's remaining servers and release its lease before starting again.`);
+    }
     assertPortRange({ portBase: prior.base, blockSize: prior.size!, blockCount: 1 }, infrastructure);
     if ([...reserved].some((port) => blockContains(prior, port, config))) {
       throw new Error("This worktree block overlaps a persistent port; adjust the worktree port settings");
@@ -112,12 +139,12 @@ export async function assignBlock(bb: BbPluginApi, environmentId: string, occupi
   return null;
 }
 
-export async function adoptBlock(bb: BbPluginApi, environmentId: string, port: number, occupied: Set<number>, config: PortConfig, reserved: Set<number>) {
+export async function adoptBlock(bb: BbPluginApi, environmentId: string, port: number, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership) {
   const infrastructure = runtimeInfrastructurePorts(bb);
   assertPortRange(config, infrastructure);
   assertPortAllowed(port, infrastructure);
   if (port < config.portBase || port > lastPort(config)) throw new Error(`Port ${port} is outside the thread range ${config.portBase}-${lastPort(config)}`);
-  const active = await reclaimIdleBlocks(bb, occupied, config);
+  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
     assertPortRange({ portBase: prior.base, blockSize: prior.size!, blockCount: 1 }, infrastructure);

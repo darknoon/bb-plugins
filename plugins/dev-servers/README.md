@@ -124,6 +124,32 @@ listener and managed terminal exit, within 15 seconds or before the next
 allocation. Idle worktrees and permanent checkouts do not hold ports. Running
 servers retain their blocks; ports may change after every server stops.
 
+Every assignment is reconciled against its terminal or adopted listener,
+including fixed ports with no block. A closed terminal's old assignment is
+removed even when a different environment now listens on its port. New blocks
+skip all occupied ports; a listener appearing on the base during allocation
+also refuses launch. Fixed-port starts respect other environments' block and
+startup leases.
+
+Vite commands and recognized package scripts get `--strictPort` automatically,
+so a collision exits instead of silently moving off the CORS grid. Custom
+wrappers must pass the flag inside their Vite invocation. Other server CLIs
+retain their arguments. See the agent skill for shell/script detection limits.
+
+To stop this thread's managed server terminals and release idle leases:
+
+```sh
+bb dev-servers stop --json
+bb dev-servers stop --port 5960 --json
+bb dev-servers release --json
+```
+
+`stop --port` closes that server's terminal and all its assigned ports. Other
+threads' terminals are preserved. `bb terminal close <terminalId>` also works.
+`release` never kills processes and refuses live or unverified servers in the
+environment. Adopted processes must be stopped separately before release;
+`stop` reports those ports. Persistent servers use `persist stop NAME`.
+
 All TCP listeners protect ports, including non-HTML services. Managed terminals
 protect the interval before a server binds, and an unavailable terminal status
 keeps its lease. Conflict errors name the listening process, PID and linked

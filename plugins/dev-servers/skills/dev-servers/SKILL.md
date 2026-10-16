@@ -24,6 +24,13 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   the block is released within 15 seconds or before the next allocation. Ports can
   change after stopping every server, so always expand the placeholders again.
 - The plugin settings `portBase`, `blockSize`, and `blockCount` control the allocation range.
+- Vite dev/preview commands and recognized npm/pnpm/yarn/bun scripts that launch
+  Vite get `--strictPort` automatically. An occupied port must fail instead of
+  drifting to the next port and breaking CORS. Scripts are read from the
+  environment's `package.json`. For custom wrappers, dynamic shell commands or
+  scripts that do not forward their final arguments to Vite, pass `--strictPort`
+  inside the actual Vite invocation. Direct non-Vite commands keep their arguments.
+  Disabling `--strictPort` in a detected Vite command is refused.
 - Ports below 5910 are unavailable. The hard-coded denylist is 22, 80, 443,
   3389, 5432, **5900–5909**, 6379, 8080, 38886, 38887, and 41641, plus bb's
   actual server and configured host-daemon ports. Screen Sharing was blocked
@@ -46,6 +53,12 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   keeps that lease until its state can be checked. Occupied-port errors identify the
   process, PID and linked thread (or say the thread is unknown). Stopped persistent
   definitions still reserve their fixed ports.
+- Reconciliation checks every assignment, including fixed ports outside blocks.
+  Exited/missing terminals lose their assignments even if a different server now
+  listens on the old port. Adopted listeners must still belong to their environment.
+  A stale block is released before start selects a free one; another process's
+  listener cannot keep that stale block alive. Pending fixed ports and whole blocks
+  are protected across environments, not just within the current thread.
 - Adopt an existing manually started server from its own project thread:
   `bb dev-servers adopt --name "icon grader" --port 5910 --json`. This records the thread association and
   leases its block without restarting the process or changing its lifetime. The
@@ -57,6 +70,25 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   and upgrades. **Do not change machine settings during plugin releases** unless
   the user explicitly requests a configuration change. Keep the default grid
   at `portBase=5910`, `blockSize=10`, `blockCount=9` for Fieldlabel's R2 CORS.
+
+## Stop and release thread servers
+
+```sh
+bb dev-servers stop --json
+bb dev-servers stop --port 5960 --json
+bb dev-servers release --json
+```
+
+Run these from the owning project thread. `stop` closes that thread's managed
+server terminals; `--port` selects one server, including its other assigned
+ports and inspector. It preserves other threads' terminals. You can also close
+a terminal directly with `bb terminal close <terminalId>`; reconciliation then
+clears its stale assignments and block. `release` reconciles and releases the
+environment's idle lease, and refuses live or unverified servers. Another
+thread sharing that environment can keep its lease active. No process is
+terminated by `release`. Adopted servers have no managed terminal: stop their
+process separately, then release; `stop` reports these ports instead of killing
+an unverified process. Persistent servers use `persist stop NAME` instead.
 
 ## Wrangler and Cloudflare Vite inspectors
 
