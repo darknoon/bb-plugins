@@ -10,6 +10,12 @@ Keep Vite on its allocated port: use `--strictPort` in wrapper scripts that
 the start command cannot identify automatically. Never rely on Vite selecting
 the next available port. Use `bb dev-servers stop` or `bb terminal close` to
 stop a managed thread server, and `bb dev-servers release` for idle leases.
+Automatic starts require `{port}`; hard-coded 59xx command ports require an
+explicit `--port`. The plugin manages private base-port Serve rules, audits
+unmanaged listeners every two minutes and expires stopped leases after
+`idleReleaseMinutes` (default 2). Let it request releases under scarcity;
+never kill another thread's process. Do not create Connect/Funnel exposure or
+touch VNC's 5900–5909 rules.
 
 Preserve the machine's saved plugin settings during builds, reloads, and
 releases. Do not run `bb plugin config dev-servers set` as a release step.

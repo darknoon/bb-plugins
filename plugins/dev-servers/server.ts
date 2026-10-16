@@ -4,11 +4,13 @@ import { realpath } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { PersistentSupervisor, persistentInputSchema, persistentServerSchema } from "./persistent";
+import { checkHealth, PersistentSupervisor, persistentInputSchema, persistentServerSchema } from "./persistent";
 import { adoptBlock, assignBlock, blockBase, blockContains, blockSize, lastPort, managedPortHolder, reclaimIdleBlocks, type Assignment, type Block, type ListenerOwnership, type PortConfig } from "./port-blocks";
 import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "./port-policy";
 import { defaultServerName, serverNameSchema, shortServerName } from "./names";
 import { strictViteCommand } from "./strict-vite";
+import { ThreadPortManager } from "./thread-ports";
+import type { TailnetRules } from "./tailnet";
 export { assignBlock } from "./port-blocks";
 
 const execFile = promisify(execFileCallback);
@@ -130,7 +132,8 @@ async function processCwd(pid: number) {
 function listenerOwnership(bb: BbPluginApi, records: Awaited<ReturnType<typeof listenerRecords>>): ListenerOwnership {
   const cwds = new Map<number, Promise<string | null>>();
   let paths: Promise<Array<{ id: string; path: string | null }>> | undefined;
-  return async (port, environment) => {
+  return async (port, environment, expectedPid) => {
+    if (expectedPid !== undefined && !records.some((r) => r.port === port && r.pid === expectedPid)) return false;
     paths ??= (async () => {
       const result: Array<{ id: string; path: string | null }> = [];
       for (let offset = 0; ; offset += 1000) {
@@ -414,48 +417,29 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
     portsByHost.set(server.hostId, ports);
   }
 
-  const connectUrlByServer = new Map<string, string>();
   const allPorts = new Set(Array.from(portsByHost.values()).flatMap((ports) => Array.from(ports)));
-  const tailnetUrlByPortPromise = tailnetUrls(allPorts);
-  await Promise.all(Array.from(portsByHost, async ([hostId, ports]) => {
-    try {
-      const tunnel = await bb.hosts.ensureSharedPortTunnel(hostId);
-      bb.hosts.declareSharedPorts(hostId, Array.from(ports));
-      for (const port of ports) {
-        connectUrlByServer.set(`${hostId}:${port}`, `https://${tunnel.label}--${port}.${tunnel.baseDomain}`);
-      }
-    } catch (cause) {
-      // Discovery currently runs on the BB server itself. Older server-host Connect setups do not
-      // have a machine credential, so use the core Connect command as a compatibility path.
-      await Promise.all(Array.from(ports, async (port) => {
-        try {
-          const { stdout } = await execFile(process.env.BB_CLI ?? "bb", ["connect", "expose", String(port)]);
-          const url = stdout.trim();
-          if (new URL(url).protocol === "https:") connectUrlByServer.set(`${hostId}:${port}`, url);
-        } catch (fallbackCause) {
-          bb.log.warn(`Could not expose port ${port} on ${hostId}: ${fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause)} (native sharing: ${cause instanceof Error ? cause.message : String(cause)})`);
-        }
-      }));
-    }
-  }));
-  const tailnetUrlByPort = await tailnetUrlByPortPromise;
+  // Port management owns private Serve routes. Reading the list must never
+  // create public Connect exposure as a fallback.
+  const tailnetUrlByPort = await tailnetUrls(allPorts);
 
   return servers.map(({ hostId, ...server }) => {
     return {
       ...server,
-      connectUrl: connectUrlByServer.get(`${hostId}:${server.port}`) ?? null,
+      connectUrl: null,
       tailnetUrl: tailnetUrlByPort.get(server.port) ?? null,
       tailnetDescription: tailnetUrlByPort.has(server.port) ? server.name : null,
     };
   });
 }
 
-export default async function plugin(bb: BbPluginApi) {
+export default async function plugin(bb: BbPluginApi, dependencies: { threadRules?: TailnetRules } = {}) {
   bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: [
     'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers.',
     'For Wrangler, include --inspector-port {port+4} inside --command. For Cloudflare Vite, use the plugin option --inspector-port \'{port+4}\' and wire BB_DEV_SERVER_INSPECTOR_PORT to cloudflare({ inspectorPort }) in vite.config as documented in the dev-servers skill.',
     'Defaults are ten-port blocks over 5910–5999. Use {port} for Fieldlabel HTTP servers: its R2 CORS allowlist accepts only 5910, 5920, … 5990. Keep inspectors inside the server\'s own block; {port+4} fits the default. Preserve saved machine settings during plugin releases.',
+    'Automatic start requires {port} in --command; literal 59xx ports require an explicit --port option. The plugin owns private Tailscale Serve routes on app base ports and removes them when stopped; never create public Funnel or Connect exposure. It audits unmanaged listeners every two minutes, adopts only verified owners, and notifies the owning thread once if adoption is impossible.',
     'Detected Vite commands/scripts get --strictPort automatically; pass it explicitly inside custom Vite wrappers so collisions fail instead of moving ports. Stop managed thread servers with bb dev-servers stop (optionally --port), or bb terminal close <terminalId>. Use bb dev-servers release to clear idle leases; it never kills processes and refuses live servers.',
+    'Stopped blocks expire automatically after idleReleaseMinutes (default 2). If the pool is full, start lists holders and idle times and asks the longest-idle identified owner to release; never kill another thread\'s server or choose an off-grid port to bypass the pool.',
   ].join(" ") }));
   const settings = bb.settings.define({
     portBase: {
@@ -476,10 +460,25 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Maximum number of environments with concurrent port blocks. Idle blocks are released automatically.",
       default: String(DEFAULT_BLOCK_COUNT),
     },
+    idleReleaseMinutes: {
+      type: "string", label: "Stopped block grace (minutes)",
+      description: "Release a stopped environment's block after this many minutes (0–1440). Explicit release bypasses the grace; live servers are never reclaimed.",
+      default: "2",
+    },
   });
+
+  async function reclaimOptions(forceEnvironmentId?: string) {
+    const minutes = Number((await settings.get()).idleReleaseMinutes);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw new Error("idleReleaseMinutes must be an integer from 0 to 1440");
+    return { idleGraceMs: minutes * 60_000, ...(forceEnvironmentId ? { forceEnvironmentId } : {}) };
+  }
+  async function reclaimRecords(records: Awaited<ReturnType<typeof listenerRecords>>, config: PortConfig, forceEnvironmentId?: string) {
+    return reclaimIdleBlocks(bb, new Set(records.map((l) => l.port)), config, listenerOwnership(bb, records), await reclaimOptions(forceEnvironmentId));
+  }
 
   const startupConfig = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb, false));
   if (!startupConfig.config) throw new Error(startupConfig.error!);
+  await reclaimOptions();
 
   async function validateLocationAndPort(cwd: string, port: number) {
     assertPortAllowed(port, runtimeInfrastructurePorts(bb));
@@ -487,7 +486,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (!parsed.config) throw new Error(parsed.error!);
     const config = parsed.config;
     const listeners = await listenerRecords();
-    await reclaimIdleBlocks(bb, new Set(listeners.map((l) => l.port)), config, listenerOwnership(bb, listeners));
+    await reclaimRecords(listeners, config);
     const environments = [];
     for (let offset = 0; ; offset += 1000) {
       const page = await bb.sdk.environments.list({ limit: 1000, offset });
@@ -510,12 +509,18 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
   const persistent = new PersistentSupervisor(bb, validateLocationAndPort);
+  const threadPorts = new ThreadPortManager(bb, {
+    rules: dependencies.threadRules,
+    processInfo: async (pid) => { const [cwd, command] = await Promise.all([processCwd(pid), processCommand(pid)]); return { cwd, command }; },
+    probe: async (port) => (await checkHealth({ port, health: { path: "/", status: 200, contentType: "text/html", bodyIncludes: "" } }, 1000)).healthy,
+  });
   bb.background.service("persistent-servers", { async start(signal) {
     const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
     if (!parsed.config) throw new Error(parsed.error!);
     await persistent.run(signal);
   } });
   bb.onDispose(() => persistent.dispose());
+  bb.onDispose(() => threadPorts.dispose());
   bb.background.service("port-block-leases", { async start(signal) {
     while (!signal.aborted) {
       try {
@@ -523,7 +528,8 @@ export default async function plugin(bb: BbPluginApi) {
           const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
           if (!parsed.config) throw new Error(parsed.error!);
           const listeners = await listenerRecords();
-          await reclaimIdleBlocks(bb, new Set(listeners.map((l) => l.port)), parsed.config, listenerOwnership(bb, listeners));
+          await reclaimRecords(listeners, parsed.config);
+          await threadPorts.sweep({ listeners, config: parsed.config, reserved: new Set([...await persistent.reservedPorts(), ...runtimeInfrastructurePorts(bb)]), reclaim: await reclaimOptions() });
         });
       } catch (cause) {
         if (!signal.aborted) bb.log.warn(`Could not inspect port block leases: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -585,12 +591,12 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return rows;
   }
-  async function reconcile() {
+  async function reconcile(forceEnvironmentId?: string) {
     const parsed = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
     if (!parsed.config) throw new Error(parsed.error!);
     const listeners = await listenerRecords();
     const occupied = new Set(listeners.map((l) => l.port));
-    const active = await reclaimIdleBlocks(bb, occupied, parsed.config, listenerOwnership(bb, listeners));
+    const active = await reclaimRecords(listeners, parsed.config, forceEnvironmentId);
     return { active, occupied, listeners, config: parsed.config };
   }
   const commands = {
@@ -605,7 +611,7 @@ export default async function plugin(bb: BbPluginApi) {
       summary: "Start a dev server in a thread terminal",
       options: {
         name: nameOption,
-        command: { type: "string", required: true, description: "Foreground command; use {port}, {port+N}" },
+        command: { type: "string", required: true, description: "Foreground command requiring {port} for automatic allocation; {port+N} is another slot. Literal 59xx ports require --port." },
         port: { type: "integer", min: 1, max: 65535, description: "Explicit fixed port (bypasses worktree blocks)" },
         "inspector-port": { type: "string", description: "Reserve a separate slot (e.g. {port+4}) and export BB_DEV_SERVER_INSPECTOR_PORT; Cloudflare Vite config must read it" },
         json,
@@ -615,6 +621,10 @@ export default async function plugin(bb: BbPluginApi) {
         // Serialize allocation with persistent reservations and other starts.
         return persistent.exclusive(async () => {
           const commandTemplate = input.options.command;
+          if (input.options.port === undefined) {
+            if (/\b59\d{2}\b/.test(commandTemplate)) return { exitCode: 2, stderr: "Hard-coded 59xx ports require an explicit --port option. Use {port} for the app and {port+N} for helpers.\n" };
+            if (!commandTemplate.includes("{port}")) return { exitCode: 2, stderr: "Automatic allocation requires {port} in --command. Use --port explicitly for a fixed-port command.\n" };
+          }
           const inspectorTemplate = input.options["inspector-port"];
           if (inspectorTemplate !== undefined && !/^(?:\d+|\{port(?:\+\d+)?\})$/.test(inspectorTemplate)) {
             return { exitCode: 2, stderr: "--inspector-port must be a port number or a single {port+N} placeholder.\n" };
@@ -636,8 +646,9 @@ export default async function plugin(bb: BbPluginApi) {
           const listeners = await listenerRecords();
           const occupied = new Set(listeners.map((listener) => listener.port));
           const ownership = listenerOwnership(bb, listeners);
-          const active = input.options.port === undefined ? [] : await reclaimIdleBlocks(bb, occupied, config, ownership);
-          const block = input.options.port === undefined ? await assignBlock(bb, thread.environmentId, occupied, config, reserved, ownership) : null;
+          const reclaim = await reclaimOptions();
+          const active = input.options.port === undefined ? [] : await reclaimRecords(listeners, config);
+          const block = input.options.port === undefined ? await assignBlock(bb, thread.environmentId, occupied, config, reserved, ownership, reclaim) : null;
           const base = input.options.port ?? block?.base ?? null;
           if (base === null) {
             const inRange = new Set([...occupied].filter((p) => p >= config.portBase && p <= lastPort(config)));
@@ -649,7 +660,8 @@ export default async function plugin(bb: BbPluginApi) {
               const held = assignment && await bb.storage.kv.get<Block>(`block:${assignment.environmentId}`);
               if (assignment?.terminalId && held && blockContains(held, assignment.port, config) && !occupied.has(assignment.port)) pending.push(`Port ${assignment.port}: terminal ${assignment.terminalId}, thread ${assignment.threadId ?? "unknown"} (no listener yet; terminal lease retained)`);
             }
-            return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are active or reserved. Stop an unused server, or adjust blockSize/blockCount to a range outside the infrastructure denylist.\n${holders.concat(pending.slice(0, 40), definitions.map((s) => `Port ${s.port}: persistent ${s.name} (${s.state})`)).join("\n")}\n` };
+            const pressure = await threadPorts.pressure({ listeners, config, reserved, reclaim }, context.threadId!);
+            return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are active or reserved.\n${pressure.holders.concat(holders, pending.slice(0, 40), definitions.map((s) => `Port ${s.port}: persistent ${s.name} (${s.state})`)).join("\n")}\n${pressure.offer}\n` };
           }
           const size = block?.size ?? config.blockSize;
           let cwd: string | null = null;
@@ -658,14 +670,14 @@ export default async function plugin(bb: BbPluginApi) {
           const strictCommand = await strictViteCommand(commandTemplate, cwd);
           const { command: expandedCommand, ports, overrun } = expandPorts(strictCommand, base, size);
           if (overrun !== null) {
-            await reclaimIdleBlocks(bb, occupied, config, ownership);
+            await reclaimRecords(listeners, config, thread.environmentId);
             return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${size}-port block.\n` };
           }
           const requested = [...new Set(ports.length ? ports : [base])];
           for (const match of expandedCommand.matchAll(/(?:^|\s)--(?:inspector-)?port(?:=|\s+)(\d+)(?=\s|$)/g)) {
             const literal = Number(match[1]);
             if (literal < base || literal >= base + size) {
-              await reclaimIdleBlocks(bb, occupied, config, ownership);
+              await reclaimRecords(listeners, config, thread.environmentId);
               return { exitCode: 2, stderr: `Command port ${literal} is outside the assigned block ${base}-${base + size - 1}. Use {port} or {port+N}, or request its base with --port.\n` };
             }
             if (!requested.includes(literal)) requested.push(literal);
@@ -675,11 +687,11 @@ export default async function plugin(bb: BbPluginApi) {
             const inspector = expandPorts(inspectorTemplate, base, size);
             inspectorPort = Number(inspector.command);
             if (inspector.overrun !== null || inspectorPort < base || inspectorPort >= base + size || !Number.isSafeInteger(inspectorPort)) {
-              await reclaimIdleBlocks(bb, occupied, config, ownership);
+              await reclaimRecords(listeners, config, thread.environmentId);
               return { exitCode: 2, stderr: `Inspector port must be inside this server's ${size}-port block (${base}-${base + size - 1}). Use {port+1} through {port+${size - 1}} when the block has room.\n` };
             }
             if (requested.includes(inspectorPort)) {
-              await reclaimIdleBlocks(bb, occupied, config, ownership);
+              await reclaimRecords(listeners, config, thread.environmentId);
               return { exitCode: 2, stderr: `Inspector port ${inspectorPort} is already used by the command. Choose a separate slot. For Wrangler, put --inspector-port {port+N} inside --command; the plugin option is for an environment-based configuration.\n` };
             }
             requested.push(inspectorPort);
@@ -697,7 +709,7 @@ export default async function plugin(bb: BbPluginApi) {
             ?? (currentOccupied.has(base) && (!occupied.has(base) || !reusedOwnBlock) ? base : undefined)
             ?? requested.find((candidate) => currentOccupied.has(candidate));
           if (clash !== undefined) {
-            await reclaimIdleBlocks(bb, currentOccupied, config, listenerOwnership(bb, currentListeners));
+            await reclaimRecords(currentListeners, config, thread.environmentId);
             const detail = reserved.has(clash) ? [`Port ${clash}: reserved by a persistent server`] : await describeHolders(currentListeners, new Set([clash]));
             return { exitCode: 1, stderr: `Port ${clash} is already in use or reserved.\n${detail.join("\n")}\n` };
           }
@@ -735,6 +747,7 @@ export default async function plugin(bb: BbPluginApi) {
             if (sessions.some((s) => s.id === id && s.status !== "exited")) await bb.sdk.terminals.close({ terminalId: id, mode: "force" });
             for (const { key, value } of rows) if (value.terminalId === id) await bb.storage.kv.delete(key);
           }
+          await threadPorts.removeForPorts(rows.filter(({ value }) => value.terminalId && ids.has(value.terminalId)).map(({ value }) => value.port), context.threadId!);
           const { occupied } = await reconcile();
           const manualPorts = selected.filter(({ value }) => !value.terminalId && occupied.has(value.port)).map(({ value }) => value.port);
           return { exitCode: manualPorts.length ? 1 : 0,
@@ -752,7 +765,7 @@ export default async function plugin(bb: BbPluginApi) {
         return persistent.exclusive(async () => {
           const environmentId = await currentEnvironment(context.projectId!, context.threadId!);
           const before = await bb.storage.kv.get<Block>(`block:${environmentId}`);
-          await reconcile();
+          await reconcile(environmentId);
           const rows = await environmentAssignments(environmentId);
           const block = await bb.storage.kv.get<Block>(`block:${environmentId}`);
           if (rows.length || block) return { exitCode: 1, stderr: `Environment ${environmentId} still has live or unverified servers. Run bb dev-servers stop, or close their terminal with bb terminal close <terminalId>, then release.\n` };
@@ -790,7 +803,7 @@ export default async function plugin(bb: BbPluginApi) {
             const resolved = cwd ? await realpath(cwd).catch(() => cwd) : null;
             if (resolved !== path && !resolved?.startsWith(`${path}/`)) return { exitCode: 1, stderr: `Cannot adopt a block containing another environment's process.\n${(await describeHolders(listeners, new Set([listener.port]))).join("\n")}\n` };
           }
-          const block = await adoptBlock(bb, environment.id, port, new Set(listeners.map((l) => l.port)), config, await persistent.reservedPorts(), listenerOwnership(bb, listeners));
+          const block = await adoptBlock(bb, environment.id, port, new Set(listeners.map((l) => l.port)), config, await persistent.reservedPorts(), listenerOwnership(bb, listeners), await reclaimOptions());
           const listener = inBlock.find((l) => l.port === port)!;
           const key = `assignment:${environment.id}:${port}`;
           const assignment = await bb.storage.kv.get<Assignment>(key);
@@ -798,7 +811,7 @@ export default async function plugin(bb: BbPluginApi) {
           const name = input.options.name === undefined && assignment?.name ? shortServerName(assignment.name) : await resolveName(input.options.name, command, project?.name, thread);
           await bb.storage.kv.set(key, assignment?.terminalId ? { ...assignment, name } : {
             name,
-            environmentId: environment.id, port, terminalId: null,
+            environmentId: environment.id, port, terminalId: null, pid: listener.pid,
             command, threadId: context.threadId,
           } satisfies Assignment);
           const result = { name, port, pid: listener.pid, base: block.base, size: block.size, threadId: context.threadId };

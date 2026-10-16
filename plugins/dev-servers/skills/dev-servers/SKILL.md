@@ -21,7 +21,9 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   matches Fieldlabel's R2 CORS allowlist; use `{port}` for its HTTP server,
   since an app on an offset such as 5925 fails that allowlist. Permanent project checkouts
   and idle worktrees hold no block. After the last listener and managed terminal exit,
-  the block is released within 15 seconds or before the next allocation. Ports can
+  the block is released after a two-minute stopped grace (`idleReleaseMinutes`,
+  0–1440), checked every 15 seconds and before allocation. `release` bypasses the
+  grace for an idle block. Ports can
   change after stopping every server, so always expand the placeholders again.
 - The plugin settings `portBase`, `blockSize`, and `blockCount` control the allocation range.
 - Vite dev/preview commands and recognized npm/pnpm/yarn/bun scripts that launch
@@ -42,8 +44,13 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   other slots in the same block; run a second service in the worktree on one of those rather than
   picking a number. An offset equal to or larger than the configured block size is an error, not a
   silent overrun into the next worktree.
+- Automatic allocation requires the literal `{port}` placeholder in `--command`.
+  Hard-coded 59xx numbers anywhere in that command are rejected unless `--port`
+  is explicit. Use placeholders instead of copying numbers from a previous run.
 - Pass `--port <number>` only when the project explicitly requires a fixed port. It bypasses the
-  blocks entirely — offsets resolve against it and nothing is reserved.
+  automatic allocation — offsets resolve against it and requested slots have
+  terminal leases. It cannot overlap another environment's block, a persistent
+  definition, pending terminal or existing listener.
 - Use `bb dev-servers list` to inspect servers already running in project worktrees. Servers started another way can still be discovered, but their terminal association may be unavailable.
 - Lists include `name`; the side panel and preview chooser show it first, with
   port and thread secondary. When omitted, names default to the thread title
@@ -65,6 +72,17 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   process's cwd must belong to that environment, and the block must contain no
   other environment's listeners or persistent reservation. To give it automatic
   startup and crash recovery, use persistent promotion instead.
+- Every two minutes the plugin audits unmanaged dev-like listeners in 5910–6999,
+  outside persistent definitions. Verified app-base listeners and same-owner
+  helpers are adopted automatically when their block is available. Ambiguous
+  shared checkouts remain untouched. An identifiable owner whose process cannot
+  be adopted receives one notice per port until the issue clears; processes are
+  never moved or killed. Restart off-grid apps using `{port}` from their owner.
+- If all blocks are busy, start reports the holders and idle times and asks the
+  longest-idle identified owner to stop/release once per scarcity episode. Wait
+  for that owner to release; never kill another thread's process or choose an
+  off-grid port to bypass scarcity. A running server is never reclaimed merely
+  because its thread is idle.
 - Running blocks keep their stored size until all their servers stop. New
   allocations use the current settings. Saved machine settings survive reloads
   and upgrades. **Do not change machine settings during plugin releases** unless
@@ -83,12 +101,30 @@ Run these from the owning project thread. `stop` closes that thread's managed
 server terminals; `--port` selects one server, including its other assigned
 ports and inspector. It preserves other threads' terminals. You can also close
 a terminal directly with `bb terminal close <terminalId>`; reconciliation then
-clears its stale assignments and block. `release` reconciles and releases the
+clears its stale assignments and starts the stopped-block grace. `release`
+reconciles and releases the
 environment's idle lease, and refuses live or unverified servers. Another
 thread sharing that environment can keep its lease active. No process is
 terminated by `release`. Adopted servers have no managed terminal: stop their
 process separately, then release; `stop` reports these ports instead of killing
 an unverified process. Persistent servers use `persist stop NAME` instead.
+
+## Private thread access
+
+The plugin owns private Tailscale Serve rules for configured app-base ports.
+After a verified app returns HTTP 200 with HTML on loopback, its same-port
+HTTPS root route is created (or an identical existing private rule adopted).
+Stop, loss of the listener and plugin shutdown remove owned routes; reload
+restores routes for active apps. Auxiliary/off-grid ports receive no automatic
+rule. Open bb through its private `*.ts.net` origin to use the tailnet preview.
+No public BB Connect tunnel or Funnel is created. Never set these up by hand.
+
+The two-minute audit removes orphaned simple private loopback rules in
+5910–6999, excluding persistent definitions, infrastructure ports, custom
+routes/targets and Funnel. **It never touches 5900–5909**, including legacy
+metadata. Tailscale itself listening does not prove a backend is alive. Failed
+cleanup is retried; externally changed rules are preserved. Tailscale must be
+already signed in; the plugin never starts an interactive login.
 
 ## Wrangler and Cloudflare Vite inspectors
 

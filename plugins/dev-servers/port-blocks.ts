@@ -2,7 +2,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assertPortAllowed, assertPortRange, runtimeInfrastructurePorts } from "./port-policy";
 
 export type PortConfig = { portBase: number; blockSize: number; blockCount: number };
-export type Block = { environmentId: string; index: number; base: number; size?: number };
+export type Block = { environmentId: string; index: number; base: number; size?: number; idleSince?: number };
+export type ReclaimOptions = { now?: number; idleGraceMs?: number; forceEnvironmentId?: string };
 export type Assignment = {
   name?: string;
   environmentId: string;
@@ -10,10 +11,13 @@ export type Assignment = {
   terminalId: string | null;
   command: string;
   threadId?: string;
+  // PID is recorded for automatic adoption so another process taking the same
+  // port cannot inherit that adoption. Managed terminals use their own lifetime.
+  pid?: number;
 };
 // null means ownership could not be established; inspection failures must not
 // turn a live adopted server into evidence that a block is free.
-export type ListenerOwnership = (port: number, environment: { id: string; path?: string | null }) => Promise<boolean | null>;
+export type ListenerOwnership = (port: number, environment: { id: string; path?: string | null }, expectedPid?: number) => Promise<boolean | null>;
 export const blockBase = (config: PortConfig, index: number) => config.portBase + index * config.blockSize;
 export const lastPort = (config: PortConfig) => blockBase(config, config.blockCount - 1) + config.blockSize - 1;
 export const blockSize = (block: Block, config: PortConfig) => block.size
@@ -52,7 +56,8 @@ export async function managedPortHolder(bb: BbPluginApi, environmentId: string |
 
 // No terminal events are available in the SDK. Sweep periodically and before allocation.
 // A managed terminal also protects the startup interval before its process binds a port.
-export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, config: PortConfig, ownsListener?: ListenerOwnership) {
+export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, config: PortConfig, ownsListener?: ListenerOwnership, options: ReclaimOptions = {}) {
+  const now = options.now ?? Date.now();
   const live = new Map<string, { id: string; path?: string | null }>();
   for (let offset = 0; ; offset += 1000) {
     const page = await bb.sdk.environments.list({ limit: 1000, offset });
@@ -81,7 +86,7 @@ export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, 
       try { busy = (await sessions).has(value.terminalId); }
       catch { busy = true; }
     } else if (environment && occupied.has(value.port)) {
-      busy = !ownsListener || await ownsListener(value.port, environment) !== false;
+      busy = !ownsListener || await ownsListener(value.port, environment, value.pid) !== false;
     }
     if (busy) retained.add(key);
     else await bb.storage.kv.delete(key);
@@ -103,10 +108,20 @@ export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, 
       }
     }
     if (live.has(block.environmentId) && busy) {
-      active.push(block);
+      const { idleSince: _idle, ...running } = block;
+      active.push(running);
       // Stamp legacy records before settings change, preserving running 10-port blocks.
-      if (saved.size === undefined) await bb.storage.kv.set(key, block);
+      if (saved.size === undefined || saved.idleSince !== undefined) await bb.storage.kv.set(key, running);
     } else {
+      const grace = options.idleGraceMs ?? 0;
+      const idleSince = saved.idleSince ?? now;
+      if (live.has(block.environmentId) && options.forceEnvironmentId !== block.environmentId && grace > 0
+        && ![...occupied].some((port) => blockContains(block, port, config)) && now - idleSince < grace) {
+        const idle = { ...block, idleSince };
+        active.push(idle);
+        if (saved.idleSince === undefined || saved.size === undefined) await bb.storage.kv.set(key, idle);
+        continue;
+      }
       await bb.storage.kv.delete(key);
       for (const { key: assignmentKey } of blockAssignments) await bb.storage.kv.delete(assignmentKey);
     }
@@ -114,10 +129,10 @@ export async function reclaimIdleBlocks(bb: BbPluginApi, occupied: Set<number>, 
   return active;
 }
 
-export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership) {
+export async function assignBlock(bb: BbPluginApi, environmentId: string, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership, options: ReclaimOptions = {}) {
   const infrastructure = runtimeInfrastructurePorts(bb);
   assertPortRange(config, infrastructure);
-  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener);
+  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener, options);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
     if (occupied.has(prior.base) && ownsListener && await ownsListener(prior.base, { id: environmentId }) === false) {
@@ -139,12 +154,12 @@ export async function assignBlock(bb: BbPluginApi, environmentId: string, occupi
   return null;
 }
 
-export async function adoptBlock(bb: BbPluginApi, environmentId: string, port: number, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership) {
+export async function adoptBlock(bb: BbPluginApi, environmentId: string, port: number, occupied: Set<number>, config: PortConfig, reserved: Set<number>, ownsListener?: ListenerOwnership, options: ReclaimOptions = {}) {
   const infrastructure = runtimeInfrastructurePorts(bb);
   assertPortRange(config, infrastructure);
   assertPortAllowed(port, infrastructure);
   if (port < config.portBase || port > lastPort(config)) throw new Error(`Port ${port} is outside the thread range ${config.portBase}-${lastPort(config)}`);
-  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener);
+  const active = await reclaimIdleBlocks(bb, occupied, config, ownsListener, options);
   const prior = active.find((block) => block.environmentId === environmentId);
   if (prior) {
     assertPortRange({ portBase: prior.base, blockSize: prior.size!, blockCount: 1 }, infrastructure);

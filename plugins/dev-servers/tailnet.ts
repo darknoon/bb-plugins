@@ -62,7 +62,25 @@ export class TailnetRules {
     this.assertPrivate(after.serve, rule);
     if (!this.matches(after.serve, rule)) throw new Error("Tailscale did not install the expected private proxy");
   }
+  // Only simple, private, same-port loopback HTTP proxies are eligible for
+  // automatic thread ownership or orphan cleanup. Other Serve/Funnel setups
+  // retain their external ownership.
+  async privateRootRules(): Promise<TailnetRule[]> {
+    const { dnsName, serve } = await this.status();
+    const result: TailnetRule[] = [];
+    for (const key of Object.keys(serve.Web ?? {})) {
+      if (!key.startsWith(`${dnsName}:`)) continue;
+      const port = Number(key.slice(dnsName.length + 1));
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+      const rule = { dnsName, port, proxy: `http://127.0.0.1:${port}` };
+      if (!serve.AllowFunnel?.[key] && this.matches(serve, rule)) result.push(rule);
+    }
+    return result;
+  }
   async remove(rule: TailnetRule) {
+    // Screen Sharing owns this whole span. Even legacy plugin metadata must
+    // never cause an automatic Serve mutation on VNC's ports.
+    if (rule.port >= 5900 && rule.port <= 5909) return;
     const { dnsName, serve } = await this.status();
     if (dnsName !== rule.dnsName) throw new Error("Tailnet identity changed; refusing to remove another machine's rule");
     const exists = serve.TCP?.[rule.port] || serve.Web?.[`${dnsName}:${rule.port}`];

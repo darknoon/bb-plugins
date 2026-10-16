@@ -120,8 +120,10 @@ command options.
 The defaults allocate nine ten-port blocks in 5910–5999. Their app ports stay
 on the `59x0` grid required by Fieldlabel's R2 CORS allowlist. Blocks are
 assigned when a server starts and released after the last
-listener and managed terminal exit, within 15 seconds or before the next
-allocation. Idle worktrees and permanent checkouts do not hold ports. Running
+listener and managed terminal exit, after a two-minute stopped grace period.
+`idleReleaseMinutes` configures the grace (0–1440); `release` bypasses it.
+Reconciliation runs every 15 seconds and before allocation. Idle worktrees and
+permanent checkouts do not hold ports indefinitely. Running
 servers retain their blocks; ports may change after every server stops.
 
 Every assignment is reconciled against its terminal or adopted listener,
@@ -135,6 +137,9 @@ Vite commands and recognized package scripts get `--strictPort` automatically,
 so a collision exits instead of silently moving off the CORS grid. Custom
 wrappers must pass the flag inside their Vite invocation. Other server CLIs
 retain their arguments. See the agent skill for shell/script detection limits.
+Automatic allocation requires `{port}` in `--command`, and refuses literal
+59xx numbers anywhere in the command. Use `--port` explicitly only when a fixed
+port is required; it still checks reservations, leases and listeners.
 
 To stop this thread's managed server terminals and release idle leases:
 
@@ -162,7 +167,37 @@ bb dev-servers adopt --name "icon grader" --port 5910 --json
 Run adoption from the server's own project thread. It leases the block and
 records its thread without restarting or supervising the process. It refuses
 other environments' processes and persistent reservations. Adoption releases
-its lease when the listener stops. Persistent promotion adds supervision.
+its lease after the listener stops and the stopped grace expires. Persistent
+promotion adds supervision.
+
+The plugin audits unmanaged dev-like listeners in 5910–6999 every two minutes.
+It adopts an app on a configured block base (and helpers in that same owner's
+block) only when the process's cwd, thread ID or existing assignment establishes
+its owner and no foreign listener/lease conflicts. Ambiguous shared checkouts
+remain unassigned. It never moves or kills an external process. If it can
+identify the owner but cannot adopt, that thread receives one actionable notice
+per port until the issue clears, including across plugin reloads.
+
+If every block is busy, `start` lists the holders, PIDs, and thread/stopped idle
+times. It sends the longest-idle identified holder a stop/release request once
+per scarcity episode. Thread inactivity is a reason to ask, never authority to
+stop or take another thread's running server.
+
+## Private thread Serve rules
+
+For app base ports, the plugin creates and owns a private same-port Tailscale
+Serve HTTPS root proxy after the loopback app returns HTTP 200 and HTML. Existing
+identical private root proxies are adopted automatically. Stop, loss of the app,
+and plugin unload remove the owned route; active apps regain it after reload.
+Helpers and explicit off-grid ports get no automatic rule. Tailscale must already
+be signed in; a failure is logged, without interactive login or public exposure.
+
+The two-minute audit also removes simple private same-port loopback rules in
+5910–6999 with no real application listening. A Tailscale listener alone is not
+a backend. Persistent definitions (even stopped), infrastructure ports, Funnel,
+custom targets/handlers and **5900–5909** are excluded. The plugin never mutates
+VNC rules, even from legacy ownership metadata. An externally changed owned
+rule is left untouched. No BB Connect tunnel or public Funnel is created.
 
 Configure the
 first port, ports per worktree, and worktree-block count in BB's plugin
@@ -214,9 +249,9 @@ CLI output; the native proxy target and access scope keep their normal meaning.
 - When BB is opened through a Tailscale `*.ts.net` origin and Tailscale Serve
   already exposes a server's HTTPS port, previews use that Tailnet URL. This
   avoids a second sign-in and keeps access inside the Tailnet.
-- Other clients fall back to BB Connect. The viewer must be signed into the BB
-  owner's account. A server that sets restrictive iframe headers may still
-  require the external-browser action.
+- Previews otherwise use the loopback URL. For another machine, open bb through
+  its private tailnet origin. A server that sets restrictive iframe headers may
+  still require the external-browser action.
 
 ## Install
 

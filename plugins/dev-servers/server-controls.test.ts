@@ -63,7 +63,7 @@ test("fixed-port starts honor other environments' pending ports and entire activ
 test("stop closes all ports of the selected terminal, preserves another thread, and release refuses live leases", async () => {
   const h = await fixture();
   expect((await h.harness.behavior.runCli(["start", "--name", "first", "--inspector-port", "{port+4}", "--command", "pnpm dev --port {port}"], a)).exitCode).toBe(0);
-  expect((await h.harness.behavior.runCli(["start", "--name", "shared", "--inspector-port", "{port+3}", "--command", "pnpm dev --port {port+1}"], shared)).exitCode).toBe(0);
+  expect((await h.harness.behavior.runCli(["start", "--name", "shared", "--port", String(h.base), "--inspector-port", "{port+3}", "--command", "pnpm dev --port {port+1}"], shared)).exitCode).toBe(0);
   expect((await h.harness.behavior.runCli(["release"], a)).exitCode).toBe(1);
   const stop = await h.harness.behavior.runCli(["stop", "--port", String(h.base), "--json"], a);
   expect(stop.exitCode).toBe(0);
@@ -116,6 +116,20 @@ test("literal port arguments cannot escape the allocated block", async () => {
   const h = await fixture();
   const start = await h.harness.behavior.runCli(["start", "--name", "wrong port", "--command", "pnpm dev --port 5960"], a);
   expect(start.exitCode).toBe(2);
-  expect(start.stderr).toContain("outside the assigned block");
+  expect(start.stderr).toContain("Hard-coded 59xx ports require an explicit --port");
   expect(h.harness.inspection.sdk.callsTo("terminals.create")).toHaveLength(0);
+});
+
+test("automatic starts require {port} and reject literal 59xx ports before creating a lease", async () => {
+  const h = await fixture();
+  for (const command of ["pnpm dev", "pnpm dev --port {port+1}", "pnpm dev --port 5910", "BASE={port} pnpm dev --port 5920", "pnpm dev --host http://localhost:5930 --port {port}"]) {
+    const result = await h.harness.behavior.runCli(["start", "--name", "bad allocation", "--command", command], a);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toMatch(/requires \{port\}|Hard-coded 59xx/);
+  }
+  expect(await h.bb.storage.kv.list("block:")).toEqual([]);
+  expect(h.harness.inspection.sdk.callsTo("terminals.create")).toHaveLength(0);
+  const fixed = await h.harness.behavior.runCli(["start", "--name", "explicit", "--port", String(h.base), "--command", `pnpm dev --port ${h.base}`, "--json"], a);
+  expect(fixed.exitCode).toBe(0);
+  expect(JSON.parse(fixed.stdout).command).toContain("--strictPort");
 });

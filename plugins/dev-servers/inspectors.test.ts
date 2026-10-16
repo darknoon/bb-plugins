@@ -102,7 +102,7 @@ createServer((_req, res) => res.end('managed inspector fixture')).listen(Number(
   // Managed ownership survives a command changing directory outside the checkout.
   h.harness.inspection.sdk.stub("environments.get", async () => ({ id: "a", status: "ready", path: "/different/checkout", hostId: "host", name: "Checkout", branchName: null }));
   const collision = await h.harness.behavior.runCli([
-    "start", "--name", "inspector collision", "--inspector-port", "{port+4}", "--command", "echo {port+2}",
+    "start", "--name", "inspector collision", "--port", String(h.base), "--inspector-port", "{port+4}", "--command", "echo {port+2}",
   ], { projectId: "p", threadId: "ta" });
   expect(collision.exitCode).toBe(1);
   expect(collision.stderr).toContain(`Port ${results[0].inspectorPort}`);
@@ -124,7 +124,7 @@ test("invalid, shared, occupied, and pending inspector slots fail before another
   const first = await h.harness.behavior.runCli([...args, "--inspector-port", "{port+4}", "--json"], ctx);
   expect(first.exitCode).toBe(0);
   const duplicate = await h.harness.behavior.runCli([
-    "start", "--name", "second viewer", "--command", "pnpm dev --port {port+1}", "--inspector-port", "{port+4}",
+    "start", "--name", "second viewer", "--port", String(h.base), "--command", "pnpm dev --port {port+1}", "--inspector-port", "{port+4}",
   ], ctx);
   expect(duplicate.exitCode).toBe(1);
   expect(duplicate.stderr).toContain(`Port ${h.base + 4}: managed terminal`);
@@ -134,7 +134,7 @@ test("invalid, shared, occupied, and pending inspector slots fail before another
   await new Promise<void>((resolve) => listener.listen(h.base + 3, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve) => listener.close(() => resolve())));
   const occupied = await h.harness.behavior.runCli([
-    "start", "--name", "second viewer", "--command", "pnpm dev --port {port+1}", "--inspector-port", "{port+3}",
+    "start", "--name", "second viewer", "--port", String(h.base), "--command", "pnpm dev --port {port+1}", "--inspector-port", "{port+3}",
   ], ctx);
   expect(occupied.exitCode).toBe(1);
   expect(occupied.stderr).toContain(`Port ${h.base + 3}`);

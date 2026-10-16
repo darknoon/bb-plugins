@@ -59,12 +59,12 @@ test("extra handlers are never overwritten or deleted by adoption", async () => 
   expect(mutations).toEqual([]);
 });
 
-test("an exactly owned legacy rule on a newly forbidden port can still be cleaned up", async () => {
+test("VNC rules are never touched, even with legacy plugin ownership", async () => {
   const { rules, existing, dnsName, serve, mutations } = fixture();
   existing(443, "http://127.0.0.1:38886");
   existing(5909);
   await rules.remove({ dnsName, port: 5909, proxy: "http://127.0.0.1:5909" });
-  expect(mutations).toEqual([["serve", "--yes", "--https=5909", "off"]]);
+  expect(mutations).toEqual([]);
   expect(serve.Web[`${dnsName}:443`]).toBeDefined();
-  expect(serve.Web[`${dnsName}:5909`]).toBeUndefined();
+  expect(serve.Web[`${dnsName}:5909`]).toBeDefined();
 });

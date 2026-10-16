@@ -4,12 +4,13 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { adoptBlock, assignBlock, managedPortHolder, reclaimIdleBlocks } from "./port-blocks";
 import { portAvailable } from "./persistent";
 import plugin from "./server";
+import { TailnetRules } from "./tailnet";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const config = { portBase: 5910, blockSize: 5, blockCount: 18 };
 function hostFor(ids: string[]) {
-  const host = createFakePluginHost({ pluginId: "dev-servers", sdk: {
+  const host = createFakePluginHost({ pluginId: "dev-servers", settings: { idleReleaseMinutes: "0" }, sdk: {
     environments: { list: async () => ids.map((id) => ({ id, status: "ready" })) },
     terminals: { list: async () => ({ sessions: [] }) },
   } });
@@ -121,6 +122,37 @@ test("startup terminals hold blocks; exit releases the final lease and assignmen
   expect(await assignBlock(host.bb, "b", new Set(), config, new Set())).toMatchObject({ base: 5910 });
 });
 
+test("stopped blocks expire after the configured grace and explicit release can bypass only an idle grace", async () => {
+  const host = hostFor(["a"]);
+  await host.bb.storage.kv.set("block:a", { environmentId: "a", index: 0, base: 5910, size: 10 });
+  await host.bb.storage.kv.set("assignment:a:5910", { environmentId: "a", port: 5910, terminalId: "server", threadId: "ta", command: "dev" });
+  let status = "running";
+  host.harness.inspection.sdk.stub("terminals.list", async () => ({ sessions: [{ id: "server", status }] }));
+  const grid = { portBase: 5910, blockSize: 10, blockCount: 9 };
+  const options = { now: 10_000, idleGraceMs: 120_000 };
+  expect(await reclaimIdleBlocks(host.bb, new Set(), grid, undefined, options)).toMatchObject([{ base: 5910 }]);
+  expect(await host.bb.storage.kv.get("block:a")).not.toHaveProperty("idleSince");
+  status = "exited";
+  expect(await reclaimIdleBlocks(host.bb, new Set(), grid, undefined, options)).toMatchObject([{ idleSince: 10_000 }]);
+  expect(await host.bb.storage.kv.list("assignment:")).toEqual([]);
+  expect(await reclaimIdleBlocks(host.bb, new Set(), grid, undefined, { ...options, now: 129_999 })).toHaveLength(1);
+  expect(await reclaimIdleBlocks(host.bb, new Set(), grid, undefined, { ...options, now: 130_000 })).toEqual([]);
+  await host.bb.storage.kv.set("block:a", { environmentId: "a", index: 0, base: 5910, size: 10, idleSince: 10_000 });
+  expect(await reclaimIdleBlocks(host.bb, new Set(), grid, undefined, { ...options, now: 11_000, forceEnvironmentId: "a" })).toEqual([]);
+  await host.bb.storage.kv.set("block:a", { environmentId: "a", index: 0, base: 5910, size: 10 });
+  await host.bb.storage.kv.set("assignment:a:5910", { environmentId: "a", port: 5910, terminalId: "server", threadId: "ta", command: "dev" });
+  status = "running";
+  expect(await reclaimIdleBlocks(host.bb, new Set([5910]), grid, undefined, { ...options, now: 900_000, forceEnvironmentId: "a" })).toHaveLength(1);
+});
+
+test("a foreign listener never preserves a stopped block through the idle grace", async () => {
+  const host = hostFor(["a"]);
+  await host.bb.storage.kv.set("block:a", { environmentId: "a", index: 0, base: 5910, size: 10 });
+  await host.bb.storage.kv.set("assignment:a:5910", { environmentId: "a", port: 5910, terminalId: "closed", threadId: "ta", command: "dev" });
+  expect(await reclaimIdleBlocks(host.bb, new Set([5910]), { portBase: 5910, blockSize: 10, blockCount: 9 }, async () => false,
+    { now: 10_000, idleGraceMs: 120_000 })).toEqual([]);
+});
+
 test("unknown terminal status never frees a lease, and deleted environments still leave occupied ports protected", async () => {
   const host = hostFor(["a", "b"]);
   await host.bb.storage.kv.set("block:a", { environmentId: "a", index: 0, base: 5910, size: 5 });
@@ -220,7 +252,7 @@ test("concurrent wire starts reserve separate blocks before either server binds"
   expect(duplicate.stderr).toContain("terminal ta");
   expect(duplicate.stderr).toContain("thread ta");
   host.harness.inspection.sdk.stub("terminals.list", async () => ({ sessions: [] }));
-  const invalid = await host.harness.behavior.runCli(["start", "--command", "echo {port+1}"], { projectId: "p", threadId: "ta" });
+  const invalid = await host.harness.behavior.runCli(["start", "--command", "echo {port} {port+1}"], { projectId: "p", threadId: "ta" });
   expect(invalid.exitCode).toBe(2);
   expect(await host.bb.storage.kv.list("block:")).toEqual([]);
   expect(host.harness.inspection.sdk.callsTo("terminals.create")).toHaveLength(2);
@@ -232,7 +264,7 @@ test("the background lease service releases an idle block and shuts down promptl
   while (port <= 6368 && !(await portAvailable(port))) port++;
   expect(port).toBeLessThanOrEqual(6368);
   await host.bb.storage.kv.set("block:idle", { environmentId: "idle", index: 0, base: port, size: 1 });
-  await plugin(host.bb);
+  await plugin(host.bb, { threadRules: new TailnetRules(async () => "{}") });
   const service = host.harness.behavior.runService("port-block-leases");
   cleanups.push(async () => { service.controller.abort(); await service.done; });
   for (let attempt = 0; await host.bb.storage.kv.get("block:idle"); attempt++) {
