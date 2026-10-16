@@ -419,7 +419,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
 }
 
 export default async function plugin(bb: BbPluginApi) {
-  bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: 'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers.' }));
+  bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: 'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers. For Wrangler, include --inspector-port {port+4} inside --command. For Cloudflare Vite, use the plugin option --inspector-port \'{port+4}\' and wire BB_DEV_SERVER_INSPECTOR_PORT to cloudflare({ inspectorPort }) in vite.config as documented in the dev-servers skill. Keep inspectors inside the server\'s own block; defaults have five ports, so {port+9} overruns them.' }));
   const settings = bb.settings.define({
     portBase: {
       type: "string",
@@ -537,6 +537,7 @@ export default async function plugin(bb: BbPluginApi) {
         name: nameOption,
         command: { type: "string", required: true, description: "Foreground command; use {port}, {port+N}" },
         port: { type: "integer", min: 1, max: 65535, description: "Explicit fixed port (bypasses worktree blocks)" },
+        "inspector-port": { type: "string", description: "Reserve a separate slot (e.g. {port+4}) and export BB_DEV_SERVER_INSPECTOR_PORT; Cloudflare Vite config must read it" },
         json,
       },
       async run(input, context) {
@@ -544,6 +545,10 @@ export default async function plugin(bb: BbPluginApi) {
         // Serialize allocation with persistent reservations and other starts.
         return persistent.exclusive(async () => {
           const commandTemplate = input.options.command;
+          const inspectorTemplate = input.options["inspector-port"];
+          if (inspectorTemplate !== undefined && !/^(?:\d+|\{port(?:\+\d+)?\})$/.test(inspectorTemplate)) {
+            return { exitCode: 2, stderr: "--inspector-port must be a port number or a single {port+N} placeholder.\n" };
+          }
           const parsedConfig = parsePortConfig(await settings.get(), runtimeInfrastructurePorts(bb));
           if (!parsedConfig.config) return { exitCode: 2, stderr: `${parsedConfig.error}\n` };
           const config = parsedConfig.config;
@@ -567,19 +572,36 @@ export default async function plugin(bb: BbPluginApi) {
               const held = assignment && await bb.storage.kv.get<Block>(`block:${assignment.environmentId}`);
               if (assignment?.terminalId && held && blockContains(held, assignment.port, config) && !occupied.has(assignment.port)) pending.push(`Port ${assignment.port}: terminal ${assignment.terminalId}, thread ${assignment.threadId ?? "unknown"} (no listener yet; terminal lease retained)`);
             }
-            return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are active or reserved. Stop an unused server, or adjust blockSize/blockCount within 59xx.\n${holders.concat(pending.slice(0, 40), definitions.map((s) => `Port ${s.port}: persistent ${s.name} (${s.state})`)).join("\n")}\n` };
+            return { exitCode: 1, stderr: `All ${config.blockCount} port blocks (${config.portBase}-${lastPort(config)}) are active or reserved. Stop an unused server, or adjust blockSize/blockCount to a range outside the infrastructure denylist.\n${holders.concat(pending.slice(0, 40), definitions.map((s) => `Port ${s.port}: persistent ${s.name} (${s.state})`)).join("\n")}\n` };
           }
           const size = block?.size ?? config.blockSize;
-          const { command, ports, overrun } = expandPorts(commandTemplate, base, size);
+          const { command: expandedCommand, ports, overrun } = expandPorts(commandTemplate, base, size);
           if (overrun !== null) {
             await reclaimIdleBlocks(bb, occupied, config);
             return { exitCode: 2, stderr: `{port+${overrun}} is past the end of a ${size}-port block.\n` };
           }
-          const requested = ports.length ? ports : [base];
+          const requested = [...new Set(ports.length ? ports : [base])];
+          let inspectorPort: number | null = null;
+          if (inspectorTemplate !== undefined) {
+            const inspector = expandPorts(inspectorTemplate, base, size);
+            inspectorPort = Number(inspector.command);
+            if (inspector.overrun !== null || inspectorPort < base || inspectorPort >= base + size || !Number.isSafeInteger(inspectorPort)) {
+              await reclaimIdleBlocks(bb, occupied, config);
+              return { exitCode: 2, stderr: `Inspector port must be inside this server's ${size}-port block (${base}-${base + size - 1}). Use {port+1} through {port+${size - 1}} when the block has room.\n` };
+            }
+            if (requested.includes(inspectorPort)) {
+              await reclaimIdleBlocks(bb, occupied, config);
+              return { exitCode: 2, stderr: `Inspector port ${inspectorPort} is already used by the command. Choose a separate slot. For Wrangler, put --inspector-port {port+N} inside --command; the plugin option is for an environment-based configuration.\n` };
+            }
+            requested.push(inspectorPort);
+          }
+          // Only validated integers enter this shell prefix. Export, rather than a
+          // command-local assignment, also covers scripts containing shell operators.
+          const command = inspectorPort === null ? expandedCommand : `export BB_DEV_SERVER_INSPECTOR_PORT=${inspectorPort}; ${expandedCommand}`;
           for (const candidate of new Set([base, ...requested])) assertPortAllowed(candidate, runtimeInfrastructurePorts(bb));
           const currentListeners = await listenerRecords();
           const currentOccupied = new Set(currentListeners.map((l) => l.port));
-          const clash = [base, ...ports].find((candidate) => reserved.has(candidate)) ?? requested.find((candidate) => currentOccupied.has(candidate));
+          const clash = [base, ...requested].find((candidate) => reserved.has(candidate)) ?? requested.find((candidate) => currentOccupied.has(candidate));
           if (clash !== undefined) {
             await reclaimIdleBlocks(bb, currentOccupied, config);
             const detail = reserved.has(clash) ? [`Port ${clash}: reserved by a persistent server`] : await describeHolders(currentListeners, new Set([clash]));
@@ -598,8 +620,8 @@ export default async function plugin(bb: BbPluginApi) {
             name, environmentId: thread.environmentId, port: assignedPort, terminalId: terminal.id, command, threadId: context.threadId,
           } satisfies Assignment);
           return { exitCode: 0, stdout: input.options.json
-            ? `${JSON.stringify({ name, command, base, ports, terminalId: terminal.id })}\n`
-            : `Started ${name}: ${command}\nBlock: ${base}-${base + size - 1}\nPorts: ${ports.join(", ")}\nTerminal: ${terminal.id}\n` };
+            ? `${JSON.stringify({ name, command, base, ports: requested, inspectorPort, terminalId: terminal.id })}\n`
+            : `Started ${name}: ${command}\nBlock: ${base}-${base + size - 1}\nPorts: ${requested.join(", ")}\n${inspectorPort === null ? "" : `Inspector: ${inspectorPort} (BB_DEV_SERVER_INSPECTOR_PORT)\n`}Terminal: ${terminal.id}\n` };
         });
       },
     }),

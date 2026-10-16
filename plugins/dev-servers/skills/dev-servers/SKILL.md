@@ -55,6 +55,52 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   explicitly saved settings are preserved; if still using them, set `blockSize` to `5` and
   `blockCount` to `90`, keeping `portBase` at `5910`.
 
+## Wrangler and Cloudflare Vite inspectors
+
+Always give the inspector a separate port **inside the same block** when starting
+Wrangler or Cloudflare Vite. Shared defaults such as 9229–9231 can collide even
+when the HTTP ports differ. `{port+N}` expands everywhere in `--command`, and
+each referenced port is checked and leased before the terminal starts.
+
+Wrangler accepts an inspector flag directly:
+
+```sh
+bb dev-servers start --name "icon grader" \
+  --command 'pnpm exec wrangler dev --port {port} --ip 127.0.0.1 --inspector-port {port+4}'
+```
+
+Cloudflare's Vite plugin takes `inspectorPort` in `vite.config`, rather than a
+Vite CLI flag. Wire the plugin-provided environment variable into that config:
+
+```ts
+cloudflare({
+  inspectorPort: process.env.BB_DEV_SERVER_INSPECTOR_PORT
+    ? Number(process.env.BB_DEV_SERVER_INSPECTOR_PORT)
+    : undefined,
+})
+```
+
+Then start it with the **bb plugin option**, outside `--command`:
+
+```sh
+bb dev-servers start --name "icon grader" --inspector-port '{port+4}' \
+  --command 'pnpm dev --port {port} --host 127.0.0.1'
+```
+
+This option checks and leases the inspector port, exports
+`BB_DEV_SERVER_INSPECTOR_PORT` to the command and its descendants, and returns
+`inspectorPort` in JSON output. It requires the Vite config bridge above;
+Cloudflare does not read that variable automatically. Do not also reference
+the same port in `--command`. The inspector must differ from the app's ports.
+If running a second server in the same environment, choose unused slots for
+both its app and inspector; an existing listener or starting terminal prevents
+reusing a slot. The default five-port block ends at `{port+4}`. `{port+9}` is
+valid only for blocks of at least ten ports. An occupied or out-of-block
+inspector fails before launch. After starting, verify the app's expected HTTP
+response and the inspector's `/json/list` response; an open TCP port alone
+does not prove either service works. Existing servers need restarting with
+these settings; adoption does not change their inspector configuration.
+
 ## Persistent servers
 
 For viewers and tools that should survive the originating thread, register a

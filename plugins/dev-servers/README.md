@@ -20,6 +20,25 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
 Use `{port+1}` through `{port+4}` for additional services in the same
 environment with the default five-port block.
 
+Wrangler and Cloudflare Vite need a separate inspector port in that block to
+avoid colliding on their shared default. Wrangler supports the flag directly:
+
+```sh
+bb dev-servers start --name "icon grader" \
+  --command 'pnpm exec wrangler dev --port {port} --ip 127.0.0.1 --inspector-port {port+4}'
+```
+
+For Cloudflare Vite, use `--inspector-port '{port+4}'` on **bb's start command**
+and set `cloudflare({ inspectorPort: process.env.BB_DEV_SERVER_INSPECTOR_PORT
+? Number(process.env.BB_DEV_SERVER_INSPECTOR_PORT) : undefined })` in the Vite
+config. The option reserves that slot and exports the variable; Vite must read
+it explicitly. Cloudflare documents its
+[Vite inspector configuration](https://developers.cloudflare.com/workers/vite-plugin/reference/debugging/).
+See the [agent skill](skills/dev-servers/SKILL.md#wrangler-and-cloudflare-vite-inspectors)
+for full examples and verification. Every command placeholder and the optional
+inspector slot are checked for listeners, persistent reservations, and pending
+terminal leases. A five-port block supports `{port+4}`, not `{port+9}`.
+
 Always pass a short purpose label with `--name`, including for adoption and
 persistent registration. Names allow spaces and are capped at 24 characters;
 longer explicit names are rejected with an error. The side panel, chooser and
