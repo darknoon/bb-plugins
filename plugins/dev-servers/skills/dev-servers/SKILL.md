@@ -16,8 +16,10 @@ Spaces are allowed; quote multiword names. Explicit longer names are rejected.
 bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
-- By default, an environment gets five consecutive ports when its first server starts.
-  Ninety blocks cover 5910–6359. Permanent project checkouts
+- By default, an environment gets ten consecutive ports when its first server starts.
+  Nine blocks cover 5910–5999, with app bases 5910, 5920, … 5990. This grid
+  matches Fieldlabel's R2 CORS allowlist; use `{port}` for its HTTP server,
+  since an app on an offset such as 5925 fails that allowlist. Permanent project checkouts
   and idle worktrees hold no block. After the last listener and managed terminal exit,
   the block is released within 15 seconds or before the next allocation. Ports can
   change after stopping every server, so always expand the placeholders again.
@@ -50,10 +52,11 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
   process's cwd must belong to that environment, and the block must contain no
   other environment's listeners or persistent reservation. To give it automatic
   startup and crash recovery, use persistent promotion instead.
-- Running blocks from the old ten-port configuration keep their full size until
-  all their servers stop. New allocations use the current settings. Legacy
-  explicitly saved settings are preserved; if still using them, set `blockSize` to `5` and
-  `blockCount` to `90`, keeping `portBase` at `5910`.
+- Running blocks keep their stored size until all their servers stop. New
+  allocations use the current settings. Saved machine settings survive reloads
+  and upgrades. **Do not change machine settings during plugin releases** unless
+  the user explicitly requests a configuration change. Keep the default grid
+  at `portBase=5910`, `blockSize=10`, `blockCount=9` for Fieldlabel's R2 CORS.
 
 ## Wrangler and Cloudflare Vite inspectors
 
@@ -94,8 +97,9 @@ Cloudflare does not read that variable automatically. Do not also reference
 the same port in `--command`. The inspector must differ from the app's ports.
 If running a second server in the same environment, choose unused slots for
 both its app and inspector; an existing listener or starting terminal prevents
-reusing a slot. The default five-port block ends at `{port+4}`. `{port+9}` is
-valid only for blocks of at least ten ports. An occupied or out-of-block
+reusing a slot. The default ten-port block ends at `{port+9}`; the recommended
+`{port+4}` inspector fits inside it. For Fieldlabel, keep the HTTP server on
+the block base required by its CORS allowlist. An occupied or out-of-block
 inspector fails before launch. After starting, verify the app's expected HTTP
 response and the inspector's `/json/list` response; an open TCP port alone
 does not prove either service works. Existing servers need restarting with

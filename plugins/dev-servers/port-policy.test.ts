@@ -13,7 +13,7 @@ function host(options: Parameters<typeof createFakePluginHost>[0] = {}) {
   cleanups.push(() => result.harness.lifecycle.dispose());
   return result;
 }
-const config = { portBase: 5910, blockSize: 5, blockCount: 90 };
+const config = { portBase: 5910, blockSize: 10, blockCount: 9 };
 
 test("5900–5909 can never be allocated, explicitly started, adopted, or registered persistently", async () => {
   const h = host({ sdk: { projects: { list: async () => [{ id: "p", threads: [{ id: "t", environmentId: "env" }] }] } } });
@@ -48,11 +48,11 @@ test("all infrastructure ports are blocked and ranges fail rather than skip them
 test("plugin startup refuses overlapping settings and non-default bb server/daemon ports", async () => {
   const invalid = host({ settings: { portBase: "6375", blockSize: "5", blockCount: "1" } });
   await expect(plugin(invalid.bb)).rejects.toThrow("6379");
-  const server = host({ loopbackBaseUrl: "http://127.0.0.1:6123" });
-  await expect(plugin(server.bb)).rejects.toThrow("6123");
-  vi.stubEnv("BB_HOST_DAEMON_PORT", "6124");
+  const server = host({ loopbackBaseUrl: "http://127.0.0.1:5923" });
+  await expect(plugin(server.bb)).rejects.toThrow("5923");
+  vi.stubEnv("BB_HOST_DAEMON_PORT", "5924");
   const daemon = host();
-  await expect(plugin(daemon.bb)).rejects.toThrow("6124");
+  await expect(plugin(daemon.bb)).rejects.toThrow("5924");
 });
 
 test("an old active block in the Screen Sharing span cannot be returned after upgrade", async () => {
@@ -66,13 +66,13 @@ test("a factory may precede loopback binding, but services strictly check the ac
   let bound = false;
   const bb = { ...h.bb, server: new Proxy(h.bb.server, { get(target, key) {
     if (key === "loopbackBaseUrl" && !bound) throw new Error("Loopback is not bound yet");
-    if (key === "loopbackBaseUrl") return "http://127.0.0.1:6123";
+    if (key === "loopbackBaseUrl") return "http://127.0.0.1:5923";
     return Reflect.get(target, key);
   } }) };
   await plugin(bb);
   bound = true;
   const service = h.harness.behavior.runService("persistent-servers");
-  await expect(service.done).rejects.toThrow("6123");
+  await expect(service.done).rejects.toThrow("5923");
 });
 
 test("a legacy persistent definition is disabled and its exact private rule removed, with Start refused", async () => {

@@ -178,8 +178,10 @@ async function tailnetUrls(ports: Iterable<number>) {
 // portBase + k*blockSize through +blockSize-1, written in commands as `{port}` for the base
 // and `{port+N}` for the Nth slot.
 const DEFAULT_PORT_BASE = 5910;
-const DEFAULT_BLOCK_SIZE = 5;
-const DEFAULT_BLOCK_COUNT = 90;
+// Fieldlabel's R2 CORS allowlist accepts dev origins on 5910, 5920, ... 5990.
+// Keep app bases on this grid; auxiliary ports (including inspectors) use offsets.
+const DEFAULT_BLOCK_SIZE = 10;
+const DEFAULT_BLOCK_COUNT = 9;
 const PORT_PLACEHOLDER = /\{port(?:\+(\d+))?\}/g;
 
 export function parsePortConfig(values: { portBase: string; blockSize: string; blockCount: string }, infrastructure: Iterable<number> = []) {
@@ -419,7 +421,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
 }
 
 export default async function plugin(bb: BbPluginApi) {
-  bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: 'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers. For Wrangler, include --inspector-port {port+4} inside --command. For Cloudflare Vite, use the plugin option --inspector-port \'{port+4}\' and wire BB_DEV_SERVER_INSPECTOR_PORT to cloudflare({ inspectorPort }) in vite.config as documented in the dev-servers skill. Keep inspectors inside the server\'s own block; defaults have five ports, so {port+9} overruns them.' }));
+  bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: 'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers. For Wrangler, include --inspector-port {port+4} inside --command. For Cloudflare Vite, use the plugin option --inspector-port \'{port+4}\' and wire BB_DEV_SERVER_INSPECTOR_PORT to cloudflare({ inspectorPort }) in vite.config as documented in the dev-servers skill. Defaults are ten-port blocks over 5910–5999. Use {port} for Fieldlabel HTTP servers: its R2 CORS allowlist accepts only 5910, 5920, … 5990. Keep inspectors inside the server\'s own block; {port+4} fits the default. Preserve saved machine settings during plugin releases.' }));
   const settings = bb.settings.define({
     portBase: {
       type: "string",

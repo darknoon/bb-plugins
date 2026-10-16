@@ -17,8 +17,10 @@ Agents can start a server in a BB terminal with a stable port block:
 bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
-Use `{port+1}` through `{port+4}` for additional services in the same
-environment with the default five-port block.
+The default ten-port blocks start at 5910, 5920, … 5990. Use `{port}` for the
+app and `{port+1}` through `{port+9}` for auxiliary services. Fieldlabel's R2
+CORS allowlist accepts app origins only on those `59x0` base ports; a server
+on an offset such as 5925 cannot use that allowlist.
 
 Wrangler and Cloudflare Vite need a separate inspector port in that block to
 avoid colliding on their shared default. Wrangler supports the flag directly:
@@ -37,7 +39,8 @@ it explicitly. Cloudflare documents its
 See the [agent skill](skills/dev-servers/SKILL.md#wrangler-and-cloudflare-vite-inspectors)
 for full examples and verification. Every command placeholder and the optional
 inspector slot are checked for listeners, persistent reservations, and pending
-terminal leases. A five-port block supports `{port+4}`, not `{port+9}`.
+terminal leases. `{port+4}` fits the default ten-port block; offsets must stay
+below the configured block size.
 
 Always pass a short purpose label with `--name`, including for adoption and
 persistent registration. Names allow spaces and are capped at 24 characters;
@@ -79,8 +82,7 @@ Prefer free ports in 6360–6378, outside the default thread range. Persistent
 ports must be 5910–65535, outside active worktree blocks and the infrastructure
 denylist below. Even stopped definitions reserve their port;
 future block allocation skips the entire overlapping block. For example,
-reserving 5995 makes 5995–5999 unavailable with five-port blocks (5990–5999
-with legacy ten-port blocks). Explicit thread
+reserving 5995 makes the default 5990–5999 block unavailable. Explicit thread
 `--port` also respects persistent reservations. Removing the definition frees
 the reservation.
 
@@ -115,8 +117,9 @@ command options.
 
 ## Port blocks
 
-The defaults allocate ninety five-port blocks in 5910–6359, stopping below
-Redis's 6379. Blocks are assigned when a server starts and released after the last
+The defaults allocate nine ten-port blocks in 5910–5999. Their app ports stay
+on the `59x0` grid required by Fieldlabel's R2 CORS allowlist. Blocks are
+assigned when a server starts and released after the last
 listener and managed terminal exit, within 15 seconds or before the next
 allocation. Idle worktrees and permanent checkouts do not hold ports. Running
 servers retain their blocks; ports may change after every server stops.
@@ -141,16 +144,16 @@ settings, or from the CLI:
 
 ```sh
 bb plugin config dev-servers set portBase 5910
-bb plugin config dev-servers set blockSize 5
-bb plugin config dev-servers set blockCount 90
+bb plugin config dev-servers set blockSize 10
+bb plugin config dev-servers set blockCount 9
 ```
 
-Explicitly saved settings are preserved on upgrade; unsaved defaults change
-to five ports and ninety blocks. Running legacy blocks keep their
-old size until their servers stop, even after the settings change. Fresh
-allocations then use the configured size. Harbor's 5995 reservation excludes
-the 5995–5999 block with these defaults, leaving eighty-nine concurrent blocks
-once legacy blocks drain.
+Saved settings are preserved on upgrade and reload. **Do not change machine
+settings during plugin releases** unless the user explicitly requests that
+configuration change. Running blocks keep their stored size until all their
+servers stop; new allocations then use the configured size. Harbor's 5995
+reservation excludes the 5990–5999 block with the defaults, leaving eight
+concurrent thread blocks. Idle environments hold no block.
 
 The hard-coded infrastructure denylist is **22, 80, 443, 3389, 5432,
 5900–5909, 6379, 8080, 38886, 38887, and 41641**. bb's actual server port

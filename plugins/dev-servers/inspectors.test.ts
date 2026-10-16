@@ -156,5 +156,6 @@ test("agent instructions direct Wrangler and Vite to their supported inspector c
   expect(config.instructions).toContain("--inspector-port {port+4}");
   expect(config.instructions).toContain("BB_DEV_SERVER_INSPECTOR_PORT");
   expect(config.instructions).toContain("cloudflare({ inspectorPort })");
-  expect(config.instructions).toContain("{port+9} overruns");
+  expect(config.instructions).toContain("ten-port blocks over 5910–5999");
+  expect(config.instructions).toContain("R2 CORS allowlist");
 });

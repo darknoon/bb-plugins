@@ -14,8 +14,8 @@ export type Assignment = {
 export const blockBase = (config: PortConfig, index: number) => config.portBase + index * config.blockSize;
 export const lastPort = (config: PortConfig) => blockBase(config, config.blockCount - 1) + config.blockSize - 1;
 export const blockSize = (block: Block, config: PortConfig) => block.size
-  // Unsaved settings adopt the new defaults on reload. Pre-lease records used
-  // the old 5910 + index*10 layout and did not store their size.
+  // Pre-lease records used 5910 + index*10 and did not store their size.
+  // Preserve their full span even under a custom five-port configuration.
   ?? (config.portBase === 5910 && config.blockSize === 5 && block.base === 5910 + block.index * 10 ? 10 : config.blockSize);
 export const blockContains = (block: Block, port: number, config: PortConfig) =>
   port >= block.base && port < block.base + blockSize(block, config);

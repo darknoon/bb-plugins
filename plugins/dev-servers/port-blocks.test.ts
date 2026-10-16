@@ -17,6 +17,54 @@ function hostFor(ids: string[]) {
   return host;
 }
 
+test("plugin defaults allocate only CORS-allowed 59x0 app bases, with Harbor's block reserved", async () => {
+  const ids = Array.from({ length: 9 }, (_, i) => `env-${i}`);
+  const host = hostFor(ids);
+  await plugin(host.bb);
+  const descriptors = host.harness.inspection.registrations.settingsDescriptors;
+  const defaults = {
+    portBase: Number(descriptors.portBase.default),
+    blockSize: Number(descriptors.blockSize.default),
+    blockCount: Number(descriptors.blockCount.default),
+  };
+  const occupied = new Set<number>();
+  const appPorts: number[] = [];
+  for (const id of ids.slice(0, 8)) {
+    const block = await assignBlock(host.bb, id, occupied, defaults, new Set([5995]));
+    expect(block?.size).toBe(10);
+    appPorts.push(block!.base);
+    occupied.add(block!.base);
+  }
+  expect(appPorts).toEqual([5910, 5920, 5930, 5940, 5950, 5960, 5970, 5980]);
+  expect(await assignBlock(host.bb, ids[8], occupied, defaults, new Set([5995]))).toBeNull();
+});
+
+test("plugin reload preserves saved allocation settings instead of resetting them to defaults", async () => {
+  const host = hostFor(["env", "a", "b"]);
+  const configureSdk = (target: typeof host) => {
+    target.harness.inspection.sdk.stub("projects.list", async () => [{ id: "p", threads: [{ id: "t", environmentId: "env" }] }]);
+    target.harness.inspection.sdk.stub("threads.list", async () => []);
+    target.harness.inspection.sdk.stub("terminals.list", async () => ({ sessions: [{ id: "terminal-a", status: "starting" }, { id: "terminal-b", status: "starting" }] }));
+  };
+  configureSdk(host);
+  await plugin(host.bb);
+  await host.harness.behavior.setSettings({ portBase: "6200", blockSize: "3", blockCount: "2" });
+  for (const [index, id] of ["a", "b"].entries()) {
+    const base = 6200 + index * 3;
+    await host.bb.storage.kv.set(`block:${id}`, { environmentId: id, index, base, size: 3 });
+    await host.bb.storage.kv.set(`assignment:${id}:${base}`, { environmentId: id, port: base, terminalId: `terminal-${id}`, threadId: `thread-${id}`, command: "dev" });
+  }
+  const reloaded = await host.harness.lifecycle.reload(plugin);
+  cleanups.push(() => reloaded.harness.lifecycle.dispose());
+  configureSdk(reloaded);
+  const result = await reloaded.harness.behavior.runCli([
+    "start", "--name", "saved settings", "--command", "echo {port}",
+  ], { projectId: "p", threadId: "t" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("All 2 port blocks (6200-6205) are active or reserved");
+  expect(reloaded.harness.inspection.sdk.callsTo("terminals.create")).toHaveLength(0);
+});
+
 test("reclaims all eight idle live environments, including permanent checkouts, with Harbor reserved", async () => {
   const ids = Array.from({ length: 8 }, (_, i) => `idle-${i}`);
   const host = hostFor([...ids, "new"]);
@@ -51,7 +99,7 @@ test("unknown terminal status never frees a lease, and deleted environments stil
   expect(await host.bb.storage.kv.get("block:a")).toBeUndefined();
 });
 
-test("running legacy blocks retain all ten ports when defaults shrink to five", async () => {
+test("running legacy blocks retain all ten ports with a custom five-port configuration", async () => {
   const host = hostFor(["legacy", "new"]);
   await host.bb.storage.kv.set("block:legacy", { environmentId: "legacy", index: 0, base: 5910 });
   await reclaimIdleBlocks(host.bb, new Set([5917]), { ...config, blockSize: 10, blockCount: 9 });
@@ -61,7 +109,7 @@ test("running legacy blocks retain all ten ports when defaults shrink to five", 
   expect(await assignBlock(host.bb, "legacy", new Set(), config, new Set())).toMatchObject({ base: 5910, size: 5 });
 });
 
-test("the first upgrade recognizes legacy size even when unsaved settings adopt the new defaults", async () => {
+test("the first upgrade recognizes legacy size under a custom five-port configuration", async () => {
   const host = hostFor(["legacy", "new"]);
   await host.bb.storage.kv.set("block:legacy", { environmentId: "legacy", index: 0, base: 5910 });
   expect(await assignBlock(host.bb, "new", new Set([5917]), config, new Set())).toMatchObject({ base: 5920, size: 5 });
