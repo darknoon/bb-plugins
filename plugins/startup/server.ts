@@ -50,7 +50,7 @@ function formatStatus(hostId: string, status: StartupStatus): string {
     `Managed files: ${status.managed ? "yes" : "no"}`,
     `Command: ${status.command ?? "unavailable"}`,
     `LaunchAgent: ${status.launchAgentPath ?? "unavailable"}`,
-    `Claude keychain: ${status.keychain.credentialPresent ? (status.keychain.accessible ? "accessible from LaunchAgent" : "present but inaccessible") : "credential not detected"}`,
+    `Claude keychain: ${status.keychain.credentialPresent === null ? "not checked" : status.keychain.credentialPresent ? (status.keychain.accessible ? "accessible from LaunchAgent" : "present but inaccessible") : "credential not detected"}`,
     `Tailscale Serve: ${status.tailscale.configured ? "configured for port 38886" : "not confirmed"}`,
   ];
   if (status.keychain.detail) lines.push(`Keychain detail: ${status.keychain.detail}`);

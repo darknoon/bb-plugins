@@ -25,7 +25,7 @@ function statusLabel(status: StartupStatus): { label: string; detail: string } {
   if (!status.enabled) return { label: "Disabled", detail: "bb will not be started at the next login." };
   if (!status.loaded) return { label: "Attention needed", detail: "The LaunchAgent exists but is not loaded." };
   if (!status.runtimeManaged) return { label: "Attention needed", detail: "Startup is installed, but this bb process is not managed by launchd." };
-  if (status.keychain.credentialPresent && status.keychain.accessible !== true) {
+  if (status.keychain.credentialPresent && status.keychain.accessible === false) {
     return { label: "Attention needed", detail: "The LaunchAgent cannot access the existing Claude credential." };
   }
   if (!status.tailscale.configured) return { label: "Attention needed", detail: "Tailscale Serve is not confirmed for bb's port." };
@@ -208,7 +208,7 @@ function StartupSettings() {
           <StateRow label="Current bb" value={status.runtimeManaged ? "Managed by launchd" : "Not managed by launchd"} />
           <StateRow
             label="Claude keychain"
-            value={status.keychain.credentialPresent ? (status.keychain.accessible ? "Accessible" : "Inaccessible") : "No credential detected"}
+            value={status.keychain.credentialPresent === null ? "Not checked" : status.keychain.credentialPresent ? (status.keychain.accessible ? "Accessible" : "Inaccessible") : "No credential detected"}
             detail={status.keychain.detail}
           />
           <StateRow
