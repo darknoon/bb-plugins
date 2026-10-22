@@ -396,11 +396,17 @@ export default async function plugin(bb: BbPluginApi) {
     reason.length <= MAX_REASON_CHARS ? reason : `${reason.slice(0, MAX_REASON_CHARS - 1).trimEnd()}…`;
 
   function instructionsFor(threadId: string): string | null {
+    const completionRule =
+      "Before archiving, read the target thread’s latest human instructions and check for unfinished work. " +
+      "A merged PR does not establish completion. " +
+      "If the user requested continued work, keep the thread open until that work is finished or explicitly cancelled.";
     const rows = listProtections();
-    if (rows.length === 0) return null;
+    if (rows.length === 0) return completionRule;
     const listed = rows.slice(0, MAX_LISTED_THREADS);
     const lines = [
       "## Protected threads (Archive Guard)",
+      "",
+      completionRule,
       "",
       "Do NOT archive these bb threads. They are long-lived infrastructure — " +
         "sweeps, watches, and automations that look idle but are not:",
