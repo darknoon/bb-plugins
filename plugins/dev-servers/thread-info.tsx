@@ -85,7 +85,9 @@ function EnvironmentServers({ projectId, environment }: ExperimentalThreadInfoPr
               title={url ? `Open ${serverTitle(server)}` : `${serverTitle(server)} · No secure preview URL available`}
               onSelect={url ? () => open(server) : undefined}
               trailing={
-                <span className="flex shrink-0 items-center gap-0.5">
+                // The native name button stretches its hit area across the
+                // row; trailing actions must sit above that overlay.
+                <span className="relative z-10 flex shrink-0 items-center gap-0.5">
                   <Button variant="ghost" size="sm" className="h-6 px-1.5" disabled={!url} aria-label={`Open ${server.name} preview`} onClick={() => open(server)}>Open</Button>
                   <Button variant="ghost" size="sm" className="size-6 p-0" disabled={!url} aria-label={`Copy ${server.name} URL`} onClick={() => void copy(server)}>
                     <HugeiconsIcon icon={Copy01Icon} size={13} aria-hidden="true" />
