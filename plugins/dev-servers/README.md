@@ -5,11 +5,22 @@ worktrees. The left Dev Servers tab has **Persistent servers** and **Thread dev
 servers** sections. Thread rows retain their project, worktree, linked chat,
 port, process, terminal association, and preview workflow.
 
-- In a thread, choose **New tab → Open dev server** to pick a running server
+- In a thread's right-hand **Info** tab, **Dev Servers** lists the apps running
+  in that environment, with short names, ports and a running indicator. Click
+  a name or **Open** for its preview; the copy button copies its secure URL.
+  The native section remembers its collapsed state, refreshes every ten seconds
+  while the app is visible, and hides when the environment has no servers.
+  A failed scan shows Retry. Servers without a secure URL remain visible with
+  preview/copy disabled. Machine-wide persistent servers remain in the left tab.
+- **New tab → Open dev server** also lets you pick a running server
   and replace the chooser with a live preview and URL bar in that panel tab.
 - On the Dev Servers page, **Open** navigates to the server's linked chat and
   opens that server beside it. The adjacent menu copies the URL or opens it in
   an external browser.
+
+The Info section uses bb's experimental native Info components and requires
+bb 0.47 or newer. Preview tabs use `experimental_tab`; the existing New tab
+launcher and previously opened preview tabs keep the same ID and parameters.
 
 Agents can start a server in a BB terminal with a stable port block:
 

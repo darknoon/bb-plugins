@@ -3,8 +3,9 @@ import {
   definePluginApp,
   useBbNavigate,
   useRpc,
+  experimental_THREAD_INFO_SECTION_GROUPS,
+  type ExperimentalThreadActionTabProps,
   type PluginThreadHeaderActionProps,
-  type PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk/app";
 import {
   ArrowDown01Icon,
@@ -19,6 +20,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { PersistentServers, type Promotion } from "./persistent-ui";
+import { DEV_SERVER_TAB, serverIdentity, serverTitle, serverUrl, type Server } from "./servers";
+import { DevServersInfo } from "./thread-info";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,29 +30,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const PANEL_ACTION_ID = "dev-server";
+const PANEL_ACTION_ID = DEV_SERVER_TAB.id;
 const PENDING_OPEN_PREFIX = "bb-dev-servers:pending-open:";
 const PENDING_OPEN_TTL_MS = 30_000;
-
-type Server = {
-  name: string;
-  projectId: string;
-  projectName: string;
-  environmentId: string;
-  environmentName: string;
-  branchName: string | null;
-  path: string;
-  port: number;
-  pid: number;
-  processName: string;
-  command: string | null;
-  connectUrl: string | null;
-  tailnetUrl: string | null;
-  threadIds: string[];
-  thread: { id: string; title: string } | null;
-  terminal: { id: string; title: string; status: string } | null;
-  association: "managed" | "inferred" | "external";
-};
 
 type ServerIdentity = {
   environmentId: string;
@@ -73,24 +56,8 @@ function parseServerIdentity(value: unknown): ServerIdentity | null {
     : null;
 }
 
-function serverIdentity(server: Server): ServerIdentity {
-  return { environmentId: server.environmentId, port: server.port };
-}
-
 function isServerForThread(server: Server, threadId: string) {
   return server.threadIds.includes(threadId);
-}
-
-function serverTitle(server: Server) {
-  return `${server.name} · :${server.port}`;
-}
-
-function serverUrl(server: Server) {
-  const isTailnetOrigin = window.location.protocol === "https:"
-    && window.location.hostname.endsWith(".ts.net");
-  return isTailnetOrigin && server.tailnetUrl
-    ? server.tailnetUrl
-    : server.connectUrl ?? server.tailnetUrl;
 }
 
 function pendingOpenKey(threadId: string) {
@@ -277,7 +244,7 @@ function DevServerPreview({ server, onBack }: { server: Server; onBack: () => vo
   );
 }
 
-function DevServerPanel({ threadId, params }: PluginThreadPanelProps) {
+function DevServerPanel({ threadId, params }: ExperimentalThreadActionTabProps) {
   const initialSelection = useRef(parseServerIdentity(params));
   const [selected, setSelected] = useState<ServerIdentity | null>(initialSelection.current);
   const { servers, loading, error, refresh } = useDevServers();
@@ -579,12 +546,19 @@ export default definePluginApp((app) => {
     component: DevServersPanel,
   });
 
-  app.slots.threadPanelAction({
-    id: PANEL_ACTION_ID,
+  app.slots.experimental_tab({
+    ...DEV_SERVER_TAB,
     title: "Open dev server",
     icon: "ServerStack01",
     layout: "flush",
     component: DevServerPanel,
+  });
+
+  app.slots.experimental_threadInfoSection({
+    id: "dev-servers",
+    group: experimental_THREAD_INFO_SECTION_GROUPS.related,
+    order: 0,
+    component: DevServersInfo,
   });
 
   app.slots.experimental_threadHeaderAction({

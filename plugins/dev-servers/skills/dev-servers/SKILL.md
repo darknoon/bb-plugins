@@ -16,6 +16,12 @@ Spaces are allowed; quote multiword names. Explicit longer names are rejected.
 bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --host 127.0.0.1'
 ```
 
+For review, the thread's right-hand **Info → Dev Servers** section lists the
+running apps in its environment. Click the name or **Open** for a preview, or
+copy the secure URL with the copy button. It refreshes every ten seconds while
+visible and hides when empty. **New tab → Open dev server** also remains
+available. Persistent machine servers are managed from the left Dev Servers tab.
+
 - By default, an environment gets ten consecutive ports when its first server starts.
   Nine blocks cover 5910–5999, with app bases 5910, 5920, … 5990. This grid
   matches Fieldlabel's R2 CORS allowlist; use `{port}` for its HTTP server,
