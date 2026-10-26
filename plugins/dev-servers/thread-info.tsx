@@ -3,7 +3,6 @@ import {
   experimental_InfoSection as InfoSection,
   experimental_InfoList as InfoList,
   experimental_InfoListRow as InfoListRow,
-  experimental_Icon as Icon,
   experimental_copyToClipboard,
   experimental_useAppPanel,
   useBbNavigate,
@@ -11,7 +10,7 @@ import {
   useSdk,
   type ExperimentalThreadInfoProps,
 } from "@get-bb/plugin-sdk/app";
-import { BubbleChatIcon, Copy01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, Copy01Icon, MoreHorizontalIcon, ServerStack01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
@@ -85,7 +84,7 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
     const owner = child ? `Child thread: ${child.title}` : "Running";
     return (
       <InfoListRow
-        leading={<Icon name="ServerStack01" className="size-3 text-muted-foreground" aria-hidden="true" />}
+        leading={<HugeiconsIcon icon={ServerStack01Icon} className="size-3 text-muted-foreground" aria-hidden="true" />}
         leadingLabel={owner}
         name={server.name}
         context={child ? "child" : undefined}
