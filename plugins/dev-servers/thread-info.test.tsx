@@ -16,6 +16,7 @@ function server(overrides: Partial<Server> = {}): Server {
 async function mount(list: () => Promise<Server[]> | Server[], extra: Parameters<typeof renderSlot>[2] = {}) {
   const definition = await loadPluginApp(app);
   const slot = renderSlot(definition.threadInfoSections[0]!, props, {
+    sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds: [] }] }) } },
     ...extra, rpc: { list: async () => ({ servers: await list(), scannedAt: Date.now() }) },
   });
   cleanups.push(slot.lifecycle.unmount);
@@ -42,13 +43,16 @@ test("Info only shows this environment, including another thread sharing the sam
   const slot = await mount(() => [server({ name: "other checkout", environmentId: "foreign" }), server({ name: "shared checkout", threadIds: ["other-thread"], thread: { id: "other-thread", title: "Shared" } })]);
   await slot.findByRole("button", { name: "shared checkout" });
   expect(slot.queryByText("other checkout")).toBeNull();
-  expect(slot.inspection.rpcCalls[0]).toMatchObject({ method: "list", input: { projectId: "project" } });
+  expect(slot.inspection.rpcCalls[0]).toMatchObject({ method: "list", input: { projectId: null } });
 });
 
 test("a thread without a usable environment makes no discovery request and an empty environment hides its section", async () => {
   const definition = await loadPluginApp(app);
-  const noEnvironment = renderSlot(definition.threadInfoSections[0]!, { ...props, environment: null });
+  const noEnvironment = renderSlot(definition.threadInfoSections[0]!, { ...props, environment: null }, {
+    sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds: [] }] }) } },
+  });
   cleanups.push(noEnvironment.lifecycle.unmount);
+  await act(async () => {});
   expect(noEnvironment.inspection.rpcCalls).toEqual([]);
   expect(noEnvironment.queryByRole("region", { name: "Dev Servers" })).toBeNull();
   const empty = await mount(() => []);
@@ -89,4 +93,75 @@ test("polling follows server start and stop and unmount cancels further discover
   const calls = slot.inspection.rpcCalls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(INFO_REFRESH_MS * 3); });
   expect(slot.inspection.rpcCalls).toHaveLength(calls);
+});
+
+const children = (...ids: string[]): Parameters<typeof renderSlot>[2] => ({
+  sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds: ids }] }) } },
+});
+
+test("parent Info includes children and nested children from other environments/projects, with linked labels", async () => {
+  const child = server({ name: "canvas", environmentId: "child-env", port: 5920, thread: { id: "child", title: "Canvas viewer" } });
+  const nested = server({ name: "api", projectId: "another-project", environmentId: "nested-env", port: 5930, thread: { id: "nested", title: "API work" } });
+  const sibling = server({ name: "unrelated", environmentId: "sibling-env", port: 5940, thread: { id: "sibling", title: "Other work" } });
+  const slot = await mount(() => [sibling, nested, child, server()], children("child", "nested"));
+  await slot.findByRole("button", { name: "Open child thread Canvas viewer" });
+  expect(slot.getByRole("button", { name: "Open child thread API work" })).toBeDefined();
+  expect(slot.getByRole("button", { name: "Open canvas preview" })).toBeDefined();
+  expect(slot.queryByText("unrelated")).toBeNull();
+  const lists = slot.getAllByRole("list");
+  expect(lists[0].textContent).toContain("icon grader");
+  fireEvent.click(slot.getByRole("button", { name: "Open canvas preview" }));
+  expect(slot.inspection.experimental_tabOpenCalls[0]).toMatchObject({ surface: { kind: "current" }, params: { environmentId: "child-env", port: 5920 } });
+  expect(slot.inspection.navigateCalls.filter((call) => call.method === "toThread")).toHaveLength(0);
+  fireEvent.click(slot.getByRole("button", { name: "Open child thread Canvas viewer" }));
+  expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "child" });
+});
+
+test("a child sharing the parent's checkout is labeled once, with one server in the count", async () => {
+  const child = server({ thread: { id: "child", title: "Shared child" } });
+  const slot = await mount(() => [child, child], children("child"));
+  await slot.findByRole("button", { name: "Open child thread Shared child" });
+  expect(slot.getAllByRole("button", { name: "Open icon grader preview" })).toHaveLength(1);
+  expect(slot.getByRole("heading", { name: "Dev Servers 1" })).toBeDefined();
+});
+
+test("an orchestration parent without its own environment still shows its children's servers", async () => {
+  const definition = await loadPluginApp(app);
+  const slot = renderSlot(definition.threadInfoSections[0]!, { ...props, environment: null }, {
+    ...children("child"), rpc: { list: () => ({ servers: [server({ environmentId: "child-env", thread: { id: "child", title: "Child checkout" } })], scannedAt: Date.now() }) },
+  });
+  cleanups.push(slot.lifecycle.unmount);
+  await slot.findByRole("button", { name: "Open child thread Child checkout" });
+  expect(slot.getByText("icon grader")).toBeDefined();
+});
+
+test("polling removes a child's group when it is no longer in this parent's subtree", async () => {
+  vi.useFakeTimers();
+  let descendantIds = ["child"];
+  const slot = await mount(() => [server({ environmentId: "child-env", thread: { id: "child", title: "Reparented" } })], {
+    sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds }] }) } },
+  });
+  await act(async () => {});
+  expect(slot.getByText("Reparented")).toBeDefined();
+  descendantIds = [];
+  await act(async () => { await vi.advanceTimersByTimeAsync(INFO_REFRESH_MS); });
+  expect(slot.queryByRole("region", { name: "Dev Servers" })).toBeNull();
+});
+
+test("a child does not inherit its parent's or sibling's servers", async () => {
+  const slot = await mount(() => [server({ name: "parent app", environmentId: "parent-env", thread: { id: "parent", title: "Parent" } }),
+    server({ name: "sibling app", environmentId: "sibling-env", thread: { id: "sibling", title: "Sibling" } }), server()]);
+  await slot.findByText("icon grader");
+  expect(slot.queryByText("parent app")).toBeNull();
+  expect(slot.queryByText("sibling app")).toBeNull();
+});
+
+test("unmount during subtree lookup prevents an obsolete scan from starting", async () => {
+  let finish!: (result: { threads: Array<{ threadId: string; descendantIds: string[] }> }) => void;
+  const slot = await mount(() => [server()], {
+    sdk: { threads: { experimental_listDescendants: () => new Promise((resolve) => { finish = resolve; }) } },
+  });
+  slot.lifecycle.unmount();
+  await act(async () => { finish({ threads: [{ threadId: "thread", descendantIds: ["child"] }] }); });
+  expect(slot.inspection.rpcCalls).toEqual([]);
 });

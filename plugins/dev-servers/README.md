@@ -6,12 +6,20 @@ servers** sections. Thread rows retain their project, worktree, linked chat,
 port, process, terminal association, and preview workflow.
 
 - In a thread's right-hand **Info** tab, **Dev Servers** lists the apps running
-  in that environment, with short names, ports and a running indicator. Click
+  in that environment and its active child threads, including nested children
+  in other checkouts/projects. Current-environment apps come first; child apps
+  are grouped under a compact **Child · thread title** label. The label opens
+  that child thread. Shared listeners appear once, and the count is servers.
+  Parents without their own checkout can still show their children's apps.
+  Rows have short names, ports and a running indicator. Click
   a name or **Open** for its preview; the copy button copies its secure URL.
   The native section remembers its collapsed state, refreshes every ten seconds
-  while the app is visible, and hides when the environment has no servers.
+  while the app is visible, following server and thread-tree changes. It hides
+  when neither the environment nor its child threads has a server. Archived,
+  deleted and hidden child threads are omitted by bb's subtree lookup.
   A failed scan shows Retry. Servers without a secure URL remain visible with
   preview/copy disabled. Machine-wide persistent servers remain in the left tab.
+  Opening a child's app previews it beside the parent, without switching chat.
 - **New tab → Open dev server** also lets you pick a running server
   and replace the chooser with a live preview and URL bar in that panel tab.
 - On the Dev Servers page, **Open** navigates to the server's linked chat and
