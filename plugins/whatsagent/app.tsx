@@ -1384,8 +1384,8 @@ function BoardPage({ subPath }: { subPath: string }) {
   );
 }
 
-/** Unread count at the trailing edge of the sidebar row; hidden at zero. */
-function UnreadBadge() {
+/** Navigation badge: unread posts by others across open channels, for the person at this page. */
+function useUnreadBadge() {
   const rpc = useRpc<typeof rpcContract>();
   const { identity, ready } = useIdentity();
   const [total, setTotal] = useState(0);
@@ -1401,11 +1401,7 @@ function UnreadBadge() {
     if (reason === "post" || reason === "read" || reason === "channel") refetch();
   });
   if (total <= 0) return null;
-  return (
-    <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground" aria-label={`${total} unread`}>
-      {total > 99 ? "99+" : total}
-    </span>
-  );
+  return { count: total, label: `${total} unread post${total === 1 ? "" : "s"}` };
 }
 
 export default definePluginApp((app) => {
@@ -1415,6 +1411,6 @@ export default definePluginApp((app) => {
     icon: "ListView",
     path: "whatsagent",
     component: ({ subPath }) => <BoardPage subPath={subPath} />,
-    experimental_sidebarAccessory: UnreadBadge,
+    experimental_useBadge: useUnreadBadge,
   });
 });
