@@ -1,2 +1,5 @@
 dist/
 node_modules/
+# Local Keychain-authorized executable identities must not be rebuilt by checkout.
+/bin/auth-vault
+/bin/auth-vault-v2

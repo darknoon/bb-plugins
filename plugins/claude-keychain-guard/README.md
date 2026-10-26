@@ -1,5 +1,22 @@
 # Claude Keychain guard — prefix-mini only
 
+## October 26 source cleanup — not a deployment
+
+The September notes below are historical, not a statement of current protection.
+Read-selection source and tests are retained as **abandoned, unapproved experiments**;
+their tests do not establish reliable authentication or refresh-token validity.
+No plugin reload, settings change, credential access, or binary rebuild accompanied
+this cleanup. Do not enable these experiments as part of repository housekeeping.
+
+The duplicate `auth-vault-primary-candidate.m` was removed; its bounded-reader tests
+now compile the checked-in `auth-vault-v2.m` against a dummy executable, never the
+real Keychain. The two `bin/security.*` snapshots were moved out of this checkout.
+`bin/auth-vault` and `bin/auth-vault-v2` are local-only, ignored artifacts; existing
+files are deliberately left byte-for-byte and permission-for-permission unchanged.
+Git no longer tracks v2: a checkout must not replace a Keychain-authorized binary.
+Do not rebuild either helper over an authorized installation. No automatic restore
+is provided, and a fresh checkout is not a deployable backup installation.
+
 **September 18:** single failed backup captures no longer page; three failures spanning at least two minutes alert once until a successful capture. Empty initial backups and confirmed Lighthouse auth failures still alert immediately. Current snapshots are readable and include the 21:32 refresh. Capture retries succeeded, but exit 74 does not identify the underlying intermittent failure. No vault executable or primary credential changes in this alert-policy fix; automatic restoration remains absent.
 
 **September 17: outage still open.** bb rejected the plugin's removed `secret` field, so Claude ran without the wrapper; both live stores are now empty. Removed that field, updated SDK types to 0.4.87, reloaded, and verified a fresh probe executes guarded reads (authentication still fails). No verified attribution of the clearing process.
@@ -16,7 +33,7 @@ Three blocked writes within 30 minutes trigger one real request on protected vis
 
 **September 14: access restored; backup capture broken.** Copied the validated new file login into the empty Keychain; lighthouse returned `AUTH_OK` and annex thread `thr_5wv4ecfhj8` completed its retry. Lighthouse watches remain off.
 
-The vault captured the new file token, but native reads of Claude's item returned `-25293` even with the login Keychain explicitly selected. The bounded `/usr/bin/security` reader candidate passes five tests. Replacing the helper then made its existing backup item unreadable (exit 74); rebuilding the prior source did not restore access. Neither backup item nor ACL was changed. **Do not rely on capture or overwrite/delete that backup.** Candidate: `auth-vault-primary-candidate.m`; fix stable helper identity/access before deploying again. These changes are uncommitted and unpushed.
+The vault captured the new file token, but native reads of Claude's item returned `-25293` even with the login Keychain explicitly selected. The bounded `/usr/bin/security` reader candidate passed five tests. Replacing the helper then made its existing backup item unreadable (exit 74); rebuilding the prior source did not restore access. Neither backup item nor ACL was changed. **Do not rely on capture or overwrite/delete that backup.** The candidate was superseded by `auth-vault-v2.m`; stable helper identity/access remained unresolved by these tests.
 
 Unreleased candidate: `read-selector.cjs` selects newer file OAuth after account verification; it remains **disabled**, including at compile time in production. Do not enable it without the approval previously requested.
 
@@ -51,6 +68,6 @@ bb automation update auto_3fgwutht3og --project proj_hn93u3x5mv --script-file ./
 
 Owner/on-call: `thr_qgrnaqrvbx`; protected canary: `thr_rden4mbx6p` (never archive). Source characterization tests require the installed Claude 2.1.261 binary and use dummy credentials only.
 
-Coverage remains narrow: empty-token record preservation cannot make a revoked refresh token valid. `auth-vault-primary-candidate.m authorize-backup` is prepared but not installed: only explicit human approval may open its macOS prompt for `bb-Claude-auth-recovery-v1`; background operations must never prompt. Retain old encrypted backup history. Never use `-A` or relax Claude's own item permissions.
+Coverage remains narrow: empty-token record preservation cannot make a revoked refresh token valid. Only explicit human approval may open a macOS backup permission prompt; background operations must never prompt. Retain old encrypted backup history. Never use `-A` or relax Claude's own item permissions.
 
 Disable with `bb plugin disable claude-keychain-guard`, then release/restart guarded runtimes; retain this directory while installed.
