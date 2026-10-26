@@ -3,6 +3,7 @@ import {
   experimental_InfoSection as InfoSection,
   experimental_InfoList as InfoList,
   experimental_InfoListRow as InfoListRow,
+  experimental_Icon as Icon,
   experimental_copyToClipboard,
   experimental_useAppPanel,
   useBbNavigate,
@@ -10,10 +11,11 @@ import {
   useSdk,
   type ExperimentalThreadInfoProps,
 } from "@get-bb/plugin-sdk/app";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, Copy01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import type { rpcContract } from "./server";
 import { DEV_SERVER_TAB, serverIdentity, serverTitle, serverUrl, type Server } from "./servers";
 import { relatedServerGroups, type ServerGroup } from "./server-groups";
@@ -77,55 +79,63 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
       else toast.error("Could not copy the URL");
     } catch { toast.error("Could not copy the URL"); }
   }
-  function renderServer(server: Server) {
+  const rows = state.groups.flatMap((group) => group.servers.map((server) => ({ server, child: group.thread })));
+  function renderServer({ server, child }: typeof rows[number]) {
     const url = serverUrl(server);
+    const owner = child ? `Child thread: ${child.title}` : "Running";
     return (
       <InfoListRow
-        leading={<span className="block size-1.5 rounded-full bg-emerald-500" />}
-        leadingLabel="Running"
+        leading={<Icon name="ServerStack01" className="size-3 text-muted-foreground" aria-hidden="true" />}
+        leadingLabel={owner}
         name={server.name}
-        context={`:${server.port}`}
-        title={url ? `Open ${serverTitle(server)}` : `${serverTitle(server)} · No secure preview URL available`}
+        context={child ? "child" : undefined}
+        title={`${serverTitle(server)} · ${owner}${url ? "" : " · No secure preview URL available"}`}
         onSelect={url ? () => open(server) : undefined}
         trailing={
           // The native name button stretches its hit area across the
           // row; trailing actions must sit above that overlay.
-          <span className="relative z-10 flex shrink-0 items-center gap-0.5">
-            <Button variant="ghost" size="sm" className="h-6 px-1.5" disabled={!url} aria-label={`Open ${server.name} preview`} onClick={() => open(server)}>Open</Button>
-            <Button variant="ghost" size="sm" className="size-6 p-0" disabled={!url} aria-label={`Copy ${server.name} URL`} onClick={() => void copy(server)}>
-              <HugeiconsIcon icon={Copy01Icon} size={13} aria-hidden="true" />
-            </Button>
+          <span className="relative z-10 flex shrink-0 items-center gap-1">
+            <span className="text-2xs text-subtle-foreground">:{server.port}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost" size="sm"
+                  className="size-5 p-0 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
+                  aria-label={`Actions for ${server.name}`}
+                >
+                  <HugeiconsIcon icon={MoreHorizontalIcon} size={14} aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" mobileTitle={`${server.name} actions`}>
+                <DropdownMenuItem disabled={!url} onSelect={() => void copy(server)}>
+                  <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+                  Copy URL
+                </DropdownMenuItem>
+                {child ? (
+                  <DropdownMenuItem aria-label={`Open child thread ${child.title}`} onSelect={() => navigate.toThread(child.id)}>
+                    <HugeiconsIcon icon={BubbleChatIcon} aria-hidden="true" />
+                    <span className="min-w-0">
+                      Open child thread
+                      <span className="block max-w-64 truncate text-xs text-muted-foreground">{child.title}</span>
+                    </span>
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         }
       />
     );
   }
   return (
-    <InfoSection label="Dev Servers" count={state.error ? undefined : state.groups.reduce((count, group) => count + group.servers.length, 0)}>
+    <InfoSection label="Dev Servers" count={state.error ? undefined : rows.length}>
       {state.error ? (
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground" role="status">
           Couldn’t check dev servers.
           <Button variant="ghost" size="sm" className="h-6 px-2" onClick={() => setRetry((value) => value + 1)}>Retry</Button>
         </div>
       ) : (
-        <div className="space-y-3">
-          {state.groups.map((group) => (
-            <div key={group.thread?.id ?? "current"}>
-              {group.thread ? (
-                <button
-                  type="button"
-                  className="mb-1 flex max-w-full cursor-pointer items-center gap-1 text-left text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  title={group.thread.title}
-                  aria-label={`Open child thread ${group.thread.title}`}
-                  onClick={() => navigate.toThread(group.thread!.id)}
-                >
-                  <span className="shrink-0">Child ·</span><span className="truncate">{group.thread.title}</span>
-                </button>
-              ) : null}
-              <InfoList items={group.servers} getKey={(server) => `${server.environmentId}:${server.port}`} renderItem={renderServer} />
-            </div>
-          ))}
-        </div>
+        <InfoList items={rows} getKey={({ server }) => `${server.environmentId}:${server.port}`} renderItem={renderServer} />
       )}
     </InfoSection>
   );

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test, vi } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import app from "./app";
 import { DEV_SERVER_TAB, type Server } from "./servers";
@@ -22,6 +22,10 @@ async function mount(list: () => Promise<Server[]> | Server[], extra: Parameters
   cleanups.push(slot.lifecycle.unmount);
   return slot;
 }
+async function actions(slot: Awaited<ReturnType<typeof mount>>, name: string) {
+  fireEvent.keyDown(slot.getByRole("button", { name: `Actions for ${name}` }), { key: "ArrowDown" });
+  await screen.findByRole("menu");
+}
 
 test("the native Info section shares the preview tab with the existing New tab action", async () => {
   const definition = await loadPluginApp(app);
@@ -30,11 +34,12 @@ test("the native Info section shares the preview tab with the existing New tab a
   const slot = await mount(() => [server()]);
   await slot.findByRole("region", { name: "Dev Servers" });
   expect(slot.getByText(":5910")).toBeDefined();
-  fireEvent.click(slot.getByRole("button", { name: "Open icon grader preview" }));
+  fireEvent.click(slot.getByRole("button", { name: "icon grader" }));
   expect(slot.inspection.experimental_tabOpenCalls).toEqual([{
     surface: { kind: "current" }, tab: DEV_SERVER_TAB, params: { environmentId: "env", port: 5910 }, title: "icon grader · :5910",
   }]);
-  fireEvent.click(slot.getByRole("button", { name: "Copy icon grader URL" }));
+  await actions(slot, "icon grader");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
   await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: "https://fixture.example.ts.net:5910/" }]));
   expect(slot.inspection.navigateCalls.filter((call) => call.method === "toThread")).toEqual([]);
 });
@@ -63,8 +68,9 @@ test("a thread without a usable environment makes no discovery request and an em
 test("a live local app without a secure URL stays observable but cannot open or copy a broken preview", async () => {
   const slot = await mount(() => [server({ tailnetUrl: null })]);
   await slot.findByText("icon grader");
-  expect((slot.getByRole("button", { name: "Open icon grader preview" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((slot.getByRole("button", { name: "Copy icon grader URL" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(slot.queryByRole("button", { name: "icon grader" })).toBeNull();
+  await actions(slot, "icon grader");
+  expect(screen.getByRole("menuitem", { name: "Copy URL" }).getAttribute("aria-disabled")).toBe("true");
 });
 
 test("a discovery failure is observable and Retry restores the list", async () => {
@@ -73,7 +79,7 @@ test("a discovery failure is observable and Retry restores the list", async () =
   await slot.findByText("Couldn’t check dev servers.");
   fail = false;
   fireEvent.click(slot.getByRole("button", { name: "Retry" }));
-  await slot.findByRole("button", { name: "Open icon grader preview" });
+  await slot.findByRole("button", { name: "icon grader" });
   expect(slot.queryByRole("status")).toBeNull();
 });
 
@@ -99,29 +105,33 @@ const children = (...ids: string[]): Parameters<typeof renderSlot>[2] => ({
   sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds: ids }] }) } },
 });
 
-test("parent Info includes children and nested children from other environments/projects, with linked labels", async () => {
+test("parent Info uses one compact list with child labels, preview actions and child navigation in the menu", async () => {
   const child = server({ name: "canvas", environmentId: "child-env", port: 5920, thread: { id: "child", title: "Canvas viewer" } });
   const nested = server({ name: "api", projectId: "another-project", environmentId: "nested-env", port: 5930, thread: { id: "nested", title: "API work" } });
   const sibling = server({ name: "unrelated", environmentId: "sibling-env", port: 5940, thread: { id: "sibling", title: "Other work" } });
   const slot = await mount(() => [sibling, nested, child, server()], children("child", "nested"));
-  await slot.findByRole("button", { name: "Open child thread Canvas viewer" });
-  expect(slot.getByRole("button", { name: "Open child thread API work" })).toBeDefined();
-  expect(slot.getByRole("button", { name: "Open canvas preview" })).toBeDefined();
+  await slot.findByRole("button", { name: "canvas" });
+  expect(slot.getByRole("button", { name: "api" })).toBeDefined();
+  expect(slot.getAllByText("child")).toHaveLength(2);
+  expect(slot.queryByText("Canvas viewer")).toBeNull();
   expect(slot.queryByText("unrelated")).toBeNull();
   const lists = slot.getAllByRole("list");
+  expect(lists).toHaveLength(1);
   expect(lists[0].textContent).toContain("icon grader");
-  fireEvent.click(slot.getByRole("button", { name: "Open canvas preview" }));
+  fireEvent.click(slot.getByRole("button", { name: "canvas" }));
   expect(slot.inspection.experimental_tabOpenCalls[0]).toMatchObject({ surface: { kind: "current" }, params: { environmentId: "child-env", port: 5920 } });
   expect(slot.inspection.navigateCalls.filter((call) => call.method === "toThread")).toHaveLength(0);
-  fireEvent.click(slot.getByRole("button", { name: "Open child thread Canvas viewer" }));
+  await actions(slot, "canvas");
+  expect(screen.getByText("Canvas viewer")).toBeDefined();
+  fireEvent.click(screen.getByRole("menuitem", { name: "Open child thread Canvas viewer" }));
   expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "child" });
 });
 
 test("a child sharing the parent's checkout is labeled once, with one server in the count", async () => {
   const child = server({ thread: { id: "child", title: "Shared child" } });
   const slot = await mount(() => [child, child], children("child"));
-  await slot.findByRole("button", { name: "Open child thread Shared child" });
-  expect(slot.getAllByRole("button", { name: "Open icon grader preview" })).toHaveLength(1);
+  await slot.findByText("child");
+  expect(slot.getAllByRole("button", { name: "icon grader" })).toHaveLength(1);
   expect(slot.getByRole("heading", { name: "Dev Servers 1" })).toBeDefined();
 });
 
@@ -131,7 +141,7 @@ test("an orchestration parent without its own environment still shows its childr
     ...children("child"), rpc: { list: () => ({ servers: [server({ environmentId: "child-env", thread: { id: "child", title: "Child checkout" } })], scannedAt: Date.now() }) },
   });
   cleanups.push(slot.lifecycle.unmount);
-  await slot.findByRole("button", { name: "Open child thread Child checkout" });
+  await slot.findByText("child");
   expect(slot.getByText("icon grader")).toBeDefined();
 });
 
@@ -142,7 +152,7 @@ test("polling removes a child's group when it is no longer in this parent's subt
     sdk: { threads: { experimental_listDescendants: async () => ({ threads: [{ threadId: "thread", descendantIds }] }) } },
   });
   await act(async () => {});
-  expect(slot.getByText("Reparented")).toBeDefined();
+  expect(slot.getByText("child")).toBeDefined();
   descendantIds = [];
   await act(async () => { await vi.advanceTimersByTimeAsync(INFO_REFRESH_MS); });
   expect(slot.queryByRole("region", { name: "Dev Servers" })).toBeNull();

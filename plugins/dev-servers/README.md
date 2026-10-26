@@ -8,11 +8,13 @@ port, process, terminal association, and preview workflow.
 - In a thread's right-hand **Info** tab, **Dev Servers** lists the apps running
   in that environment and its active child threads, including nested children
   in other checkouts/projects. Current-environment apps come first; child apps
-  are grouped under a compact **Child · thread title** label. The label opens
-  that child thread. Shared listeners appear once, and the count is servers.
+  have a muted **child** label in the same compact list. Hover a row to see
+  its owning thread, or use **… → Open child thread** to navigate there.
+  Shared listeners appear once, and the count is servers.
   Parents without their own checkout can still show their children's apps.
-  Rows have short names, ports and a running indicator. Click
-  a name or **Open** for its preview; the copy button copies its secure URL.
+  Rows use bb's native icons, spacing and muted ports. Click a name for its
+  preview; **… → Copy URL** copies its secure URL. The menu appears on hover
+  or keyboard focus and stays visible on touch devices.
   The native section remembers its collapsed state, refreshes every ten seconds
   while the app is visible, following server and thread-tree changes. It hides
   when neither the environment nor its child threads has a server. Archived,

@@ -18,11 +18,13 @@ bb dev-servers start --name "icon grader" --command 'pnpm dev --port {port} --ho
 
 For review, the thread's right-hand **Info → Dev Servers** section lists the
 running apps in its environment plus active child/nested-child threads, even
-across checkouts or projects. Child apps have a **Child · thread title** label;
-clicking that label opens the child chat. The app's name or **Open** previews
-it beside the current parent chat. Shared listeners are listed once. Parents
-without their own environment can still see their children's apps. Click
-the copy button for a secure URL. It refreshes servers and child relationships
+across checkouts or projects. Child apps have a muted **child** label; hover
+the row to see its owning thread, or use **… → Open child thread** to open
+the child chat. Click the app's name to preview it beside the current parent
+chat. Shared listeners are listed once. Parents without their own environment
+can still see their children's apps. Use **… → Copy URL** for a secure URL;
+the menu appears on hover/focus and stays visible on touch devices.
+It refreshes servers and child relationships
 every ten seconds while visible and hides when empty. Archived, deleted and
 hidden child threads are excluded. **New tab → Open dev server** remains
 available. Persistent machine servers are managed from the left Dev Servers tab.
