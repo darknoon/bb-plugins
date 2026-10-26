@@ -106,6 +106,11 @@ export const presenceSchema = z.object({
 export type Presence = z.infer<typeof presenceSchema>;
 
 export const rpcContract = defineRpcContract({
+  /** Lightweight count for the sidebar badge: unread posts by others across open channels. */
+  wa_unread_total: {
+    input: z.object({ identity: humanIdentitySchema }),
+    output: z.object({ total: z.number() }),
+  },
   wa_overview: {
     input: z.object({ identity: humanIdentitySchema }),
     output: z.object({
@@ -1140,6 +1145,12 @@ export default async function plugin(bb: BbPluginApi) {
   // -- RPC (the Whatsagent page; the caller is the human) --------------------------
 
   bb.rpc.register(rpcContract, {
+    wa_unread_total: async ({ identity }) => {
+      const me = await memberFor(humanFor(identity), null);
+      let total = 0;
+      for (const n of unreadCounts(me.id).values()) total += n;
+      return { total };
+    },
     wa_overview: async ({ identity }) => {
       const me = (await memberFor(humanFor(identity), null));
       const policy = await readPolicy();

@@ -1384,6 +1384,30 @@ function BoardPage({ subPath }: { subPath: string }) {
   );
 }
 
+/** Unread count at the trailing edge of the sidebar row; hidden at zero. */
+function UnreadBadge() {
+  const rpc = useRpc<typeof rpcContract>();
+  const { identity, ready } = useIdentity();
+  const [total, setTotal] = useState(0);
+  const refetch = useCallback(() => {
+    if (!ready) return;
+    rpc.call("wa_unread_total", { identity }).then((r) => setTotal(r.total), () => undefined);
+  }, [rpc, identity, ready]);
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+  useRealtime("board-changed", (payload) => {
+    const reason = (payload as { reason?: string } | null)?.reason;
+    if (reason === "post" || reason === "read" || reason === "channel") refetch();
+  });
+  if (total <= 0) return null;
+  return (
+    <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground" aria-label={`${total} unread`}>
+      {total > 99 ? "99+" : total}
+    </span>
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "whatsagent",
@@ -1391,5 +1415,6 @@ export default definePluginApp((app) => {
     icon: "ListView",
     path: "whatsagent",
     component: ({ subPath }) => <BoardPage subPath={subPath} />,
+    experimental_sidebarAccessory: UnreadBadge,
   });
 });
