@@ -68,3 +68,17 @@ test("VNC rules are never touched, even with legacy plugin ownership", async () 
   expect(serve.Web[`${dnsName}:443`]).toBeDefined();
   expect(serve.Web[`${dnsName}:5909`]).toBeDefined();
 });
+
+test("URL discovery only advertises verified private HTTPS root proxies", async () => {
+  const { rules, existing, serve, dnsName, mutations } = fixture();
+  existing(5910);
+  existing(5920);
+  serve.AllowFunnel[`${dnsName}:5920`] = true;
+  existing(5930);
+  serve.TCP["5930"].HTTPS = false;
+  existing(5940, "http://127.0.0.1:5941");
+  existing(5950);
+  serve.Web[`${dnsName}:5950`].Handlers["/other"] = { Proxy: "http://127.0.0.1:5950" };
+  expect(await rules.privateRootRules()).toEqual([{ dnsName, port: 5910, proxy: "http://127.0.0.1:5910" }]);
+  expect(mutations).toEqual([]);
+});

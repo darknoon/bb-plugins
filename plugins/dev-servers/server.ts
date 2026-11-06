@@ -11,6 +11,7 @@ import { defaultServerName, serverNameSchema, shortServerName } from "./names";
 import { strictViteCommand } from "./strict-vite";
 import { ThreadPortManager } from "./thread-ports";
 import type { TailnetRules } from "./tailnet";
+import { TailnetUrlResolver } from "./tailnet-urls";
 export { assignBlock } from "./port-blocks";
 
 const execFile = promisify(execFileCallback);
@@ -76,17 +77,6 @@ type Listener = {
   command: string | null;
 };
 type ProjectThread = { id: string; environmentId: string | null; title?: string | null; titleFallback?: string | null };
-
-type TailscaleStatus = {
-  BackendState?: string;
-  Self?: { DNSName?: string };
-};
-
-type TailscaleServeStatus = {
-  Web?: Record<string, {
-    Handlers?: Record<string, { Proxy?: string }>;
-  }>;
-};
 
 function projectThreads(project: unknown): ProjectThread[] {
   if (!project || typeof project !== "object" || !("threads" in project)) return [];
@@ -166,44 +156,6 @@ async function processCommand(pid: number) {
   } catch {
     return null;
   }
-}
-
-function proxyTargetsLocalPort(proxy: string | undefined, port: number) {
-  if (!proxy) return false;
-  try {
-    const target = new URL(proxy);
-    const targetPort = Number(target.port || (target.protocol === "https:" ? 443 : 80));
-    return target.protocol === "http:"
-      && ["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)
-      && targetPort === port;
-  } catch {
-    return false;
-  }
-}
-
-async function tailnetUrls(ports: Iterable<number>) {
-  const urls = new Map<number, string>();
-  try {
-    const tailscale = process.env.TAILSCALE_BIN ?? "tailscale";
-    const [{ stdout: statusOutput }, { stdout: serveOutput }] = await Promise.all([
-      execFile(tailscale, ["status", "--json"]),
-      execFile(tailscale, ["serve", "status", "--json"]),
-    ]);
-    const status = JSON.parse(statusOutput) as TailscaleStatus;
-    const serve = JSON.parse(serveOutput) as TailscaleServeStatus;
-    const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
-    if (status.BackendState !== "Running" || !dnsName || !serve.Web) return urls;
-
-    for (const port of ports) {
-      const rootHandler = serve.Web[`${dnsName}:${port}`]?.Handlers?.["/"];
-      if (proxyTargetsLocalPort(rootHandler?.Proxy, port)) {
-        urls.set(port, `https://${dnsName}:${port}`);
-      }
-    }
-  } catch {
-    // Tailscale is optional. BB Connect remains the cross-network fallback.
-  }
-  return urls;
 }
 
 // Ports are handed out a block at a time, not one at a time: a worktree runs more than one
@@ -362,7 +314,7 @@ async function terminalForPort(bb: BbPluginApi, environment: EnvironmentInfo, po
   return { terminal: null, association: "external" as const };
 }
 
-async function listServers(bb: BbPluginApi, projectId: string | null, persistentPorts = new Set<number>()) {
+async function listServers(bb: BbPluginApi, projectId: string | null, persistentPorts: Set<number>, urls: TailnetUrlResolver) {
   const [environments, listeners, assignmentRows] = await Promise.all([
     projectEnvironments(bb, projectId),
     discoverListeners(persistentPorts),
@@ -420,7 +372,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
   const allPorts = new Set(Array.from(portsByHost.values()).flatMap((ports) => Array.from(ports)));
   // Port management owns private Serve routes. Reading the list must never
   // create public Connect exposure as a fallback.
-  const tailnetUrlByPort = await tailnetUrls(allPorts);
+  const tailnetUrlByPort = allPorts.size ? await urls.get(allPorts) : new Map<number, string>();
 
   return servers.map(({ hostId, ...server }) => {
     return {
@@ -433,6 +385,7 @@ async function listServers(bb: BbPluginApi, projectId: string | null, persistent
 }
 
 export default async function plugin(bb: BbPluginApi, dependencies: { threadRules?: TailnetRules } = {}) {
+  const urls = new TailnetUrlResolver({ onError: (cause) => bb.log.warn(`Could not discover private dev server URLs: ${cause instanceof Error ? cause.message : String(cause)}`) });
   bb.agents.configure(() => ({ tools: [], skills: ["dev-servers"], instructions: [
     'Always pass a short purpose name (at most 24 characters) when starting, adopting or registering a dev server, for example: bb dev-servers start --name "icon grader" --command \'pnpm dev --port {port} --host 127.0.0.1\'. Use --name for persistent servers too. Names appear first in Dev Servers.',
     'For Wrangler, include --inspector-port {port+4} inside --command. For Cloudflare Vite, use the plugin option --inspector-port \'{port+4}\' and wire BB_DEV_SERVER_INSPECTOR_PORT to cloudflare({ inspectorPort }) in vite.config as documented in the dev-servers skill.',
@@ -560,7 +513,7 @@ export default async function plugin(bb: BbPluginApi, dependencies: { threadRule
   }
 
   bb.rpc.register(rpcContract, {
-    list: async ({ projectId }) => ({ servers: await listServers(bb, projectId, await persistent.reservedPorts()), scannedAt: Date.now() }),
+    list: async ({ projectId }) => ({ servers: await listServers(bb, projectId, await persistent.reservedPorts(), urls), scannedAt: Date.now() }),
     persistentList: async ({ logLines }) => ({ servers: await persistent.list(logLines) }),
     persistentAdd: (input) => persistent.add(input),
     persistentControl: async ({ name, action }) => { await persistent.control(name, action); return { ok: true }; },
@@ -604,7 +557,7 @@ export default async function plugin(bb: BbPluginApi, dependencies: { threadRule
       summary: "List discovered thread dev servers", options: { json },
       async run(_input, context) {
         if (!context.projectId) return { exitCode: 2, stderr: "Run this from a BB project thread.\n" };
-        return { exitCode: 0, stdout: `${JSON.stringify(await listServers(bb, context.projectId, await persistent.reservedPorts()), null, 2)}\n` };
+        return { exitCode: 0, stdout: `${JSON.stringify(await listServers(bb, context.projectId, await persistent.reservedPorts(), urls), null, 2)}\n` };
       },
     }),
     start: cliCommand({

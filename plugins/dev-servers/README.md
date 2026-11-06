@@ -23,6 +23,9 @@ port, process, terminal association, and preview workflow.
   preview disabled; Copy URL retries discovery and explains any missing route.
   Copy actions use bb's native clipboard writer, with browser fallbacks. If
   copying fails, an error and a selectable URL remain visible for manual copy.
+  Concurrent URL lookups share one Tailscale read. Initial failures retry once;
+  transient read errors retain verified private URLs for at most one minute.
+  A successful read that removes or changes a route clears it immediately.
   Machine-wide persistent servers remain in the left tab.
   Opening a child's app previews it beside the parent, without switching chat.
 - **New tab → Open dev server** also lets you pick a running server
