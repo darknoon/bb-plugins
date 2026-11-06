@@ -20,7 +20,10 @@ port, process, terminal association, and preview workflow.
   when neither the environment nor its child threads has a server. Archived,
   deleted and hidden child threads are omitted by bb's subtree lookup.
   A failed scan shows Retry. Servers without a secure URL remain visible with
-  preview/copy disabled. Machine-wide persistent servers remain in the left tab.
+  preview disabled; Copy URL retries discovery and explains any missing route.
+  Copy actions use bb's native clipboard writer, with browser fallbacks. If
+  copying fails, an error and a selectable URL remain visible for manual copy.
+  Machine-wide persistent servers remain in the left tab.
   Opening a child's app previews it beside the parent, without switching chat.
 - **New tab → Open dev server** also lets you pick a running server
   and replace the chooser with a live preview and URL bar in that panel tab.

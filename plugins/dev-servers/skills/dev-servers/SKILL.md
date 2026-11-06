@@ -24,6 +24,9 @@ the child chat. Click the app's name to preview it beside the current parent
 chat. Shared listeners are listed once. Parents without their own environment
 can still see their children's apps. Use **… → Copy URL** for a secure URL;
 the menu appears on hover/focus and stays visible on touch devices.
+Copy retries URL discovery when a private route is temporarily missing. A
+copy failure shows an error and a selectable URL; a missing route shows an
+explanation rather than a disabled action. No public exposure is created.
 It refreshes servers and child relationships
 every ten seconds while visible and hides when empty. Archived, deleted and
 hidden child threads are excluded. **New tab → Open dev server** remains

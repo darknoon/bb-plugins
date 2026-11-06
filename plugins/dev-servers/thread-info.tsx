@@ -3,7 +3,6 @@ import {
   experimental_InfoSection as InfoSection,
   experimental_InfoList as InfoList,
   experimental_InfoListRow as InfoListRow,
-  experimental_copyToClipboard,
   experimental_useAppPanel,
   useBbNavigate,
   useRpc,
@@ -18,6 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import type { rpcContract } from "./server";
 import { DEV_SERVER_TAB, serverIdentity, serverTitle, serverUrl, type Server } from "./servers";
 import { relatedServerGroups, type ServerGroup } from "./server-groups";
+import { useCopyServerUrl } from "./copy-url";
 
 export const INFO_REFRESH_MS = 10_000;
 
@@ -26,6 +26,7 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
+  const { copy, feedback } = useCopyServerUrl();
   const [state, setState] = useState<{ scope: string; groups: ServerGroup[]; error: boolean } | null>(null);
   const environmentId = environment?.id ?? null;
   const scope = `${projectId}:${threadId}:${environmentId}`;
@@ -70,14 +71,6 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
       toast.error("Could not open the dev server preview");
     }
   }
-  async function copy(server: Server) {
-    const url = serverUrl(server);
-    if (!url) return;
-    try {
-      if (await experimental_copyToClipboard({ text: url })) toast.success("Dev server URL copied");
-      else toast.error("Could not copy the URL");
-    } catch { toast.error("Could not copy the URL"); }
-  }
   const rows = state.groups.flatMap((group) => group.servers.map((server) => ({ server, child: group.thread })));
   function renderServer({ server, child }: typeof rows[number]) {
     const url = serverUrl(server);
@@ -106,7 +99,7 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" mobileTitle={`${server.name} actions`}>
-                <DropdownMenuItem disabled={!url} onSelect={() => void copy(server)}>
+                <DropdownMenuItem onSelect={() => void copy(server)}>
                   <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
                   Copy URL
                 </DropdownMenuItem>
@@ -136,6 +129,7 @@ function ThreadServers({ threadId, projectId, environment }: ExperimentalThreadI
       ) : (
         <InfoList items={rows} getKey={({ server }) => `${server.environmentId}:${server.port}`} renderItem={renderServer} />
       )}
+      {feedback}
     </InfoSection>
   );
 }

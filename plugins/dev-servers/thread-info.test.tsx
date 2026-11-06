@@ -65,12 +65,60 @@ test("a thread without a usable environment makes no discovery request and an em
   expect(empty.queryByRole("region", { name: "Dev Servers" })).toBeNull();
 });
 
-test("a live local app without a secure URL stays observable but cannot open or copy a broken preview", async () => {
+test("a server without a private URL keeps Copy available and explains a missing route", async () => {
   const slot = await mount(() => [server({ tailnetUrl: null })]);
   await slot.findByText("icon grader");
   expect(slot.queryByRole("button", { name: "icon grader" })).toBeNull();
   await actions(slot, "icon grader");
-  expect(screen.getByRole("menuitem", { name: "Copy URL" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Copy URL" }).getAttribute("aria-disabled")).not.toBe("true");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+  await slot.findByRole("alert");
+  expect(slot.getByText(/No private URL is available/)).toBeDefined();
+  expect(slot.inspection.experimental_clipboardWrites).toEqual([]);
+});
+
+test("Copy retries missing URL discovery and copies only the matching server's private URL", async () => {
+  let calls = 0;
+  const slot = await mount(() => ++calls === 1 ? [server({ tailnetUrl: null })] : [
+    server({ environmentId: "foreign", tailnetUrl: "https://wrong.example.ts.net:5910/" }), server(),
+  ]);
+  await slot.findByText("icon grader");
+  await actions(slot, "icon grader");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+  await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: "https://fixture.example.ts.net:5910/" }]));
+  expect(slot.inspection.rpcCalls[1]).toMatchObject({ method: "list", input: { projectId: "project" } });
+  expect(slot.queryByRole("alert")).toBeNull();
+});
+
+test("a failed clipboard write provides an error and a selectable URL", async () => {
+  const slot = await mount(() => [server()], { experimental_copyToClipboard: async () => false });
+  await slot.findByText("icon grader");
+  await actions(slot, "icon grader");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+  await slot.findByText("Could not copy the URL. Select and copy it below.");
+  const field = slot.getByRole("textbox", { name: "URL to copy manually" }) as HTMLInputElement;
+  expect(field.value).toBe("https://fixture.example.ts.net:5910/");
+  expect(field.readOnly).toBe(true);
+  fireEvent.focus(field);
+  expect([field.selectionStart, field.selectionEnd]).toEqual([0, field.value.length]);
+  fireEvent.click(slot.getByRole("button", { name: "Dismiss" }));
+  expect(slot.queryByRole("alert")).toBeNull();
+});
+
+test("a URL retry failure stays visible and Copy can be retried", async () => {
+  let calls = 0;
+  const slot = await mount(() => {
+    if (++calls === 2) throw new Error("offline");
+    return [server({ tailnetUrl: calls === 1 ? null : server().tailnetUrl })];
+  });
+  await slot.findByText("icon grader");
+  await actions(slot, "icon grader");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+  await slot.findByText("Could not check the dev server URL. Try Copy URL again.");
+  await actions(slot, "icon grader");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy URL" }));
+  await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toHaveLength(1));
+  expect(slot.queryByRole("alert")).toBeNull();
 });
 
 test("a discovery failure is observable and Retry restores the list", async () => {

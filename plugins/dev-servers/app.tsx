@@ -22,6 +22,7 @@ import type { rpcContract } from "./server";
 import { PersistentServers, type Promotion } from "./persistent-ui";
 import { DEV_SERVER_TAB, serverIdentity, serverTitle, serverUrl, type Server } from "./servers";
 import { DevServersInfo } from "./thread-info";
+import { useCopyServerUrl } from "./copy-url";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -88,15 +89,6 @@ function takePendingOpen(threadId: string): PendingPanelOpen | null {
     return { createdAt: value.createdAt, title: value.title, params };
   } catch {
     return null;
-  }
-}
-
-async function copyUrl(url: string) {
-  try {
-    await navigator.clipboard.writeText(url);
-    toast.success("Dev server URL copied");
-  } catch {
-    toast.error("Could not copy the URL");
   }
 }
 
@@ -167,6 +159,7 @@ function ServerChoice({
 }
 
 function DevServerPreview({ server, onBack }: { server: Server; onBack: () => void }) {
+  const { copy, feedback } = useCopyServerUrl();
   const [reloadKey, setReloadKey] = useState(0);
   const [frameLoading, setFrameLoading] = useState(true);
   const url = serverUrl(server);
@@ -207,7 +200,7 @@ function DevServerPreview({ server, onBack }: { server: Server; onBack: () => vo
           size="icon"
           variant="ghost"
           aria-label="Copy dev server URL"
-          onClick={() => void copyUrl(url)}
+          onClick={() => void copy(server)}
         >
           <HugeiconsIcon icon={Copy01Icon} />
         </Button>
@@ -225,6 +218,7 @@ function DevServerPreview({ server, onBack }: { server: Server; onBack: () => vo
           </a>
         </Button>
       </div>
+      {feedback ? <div className="px-2">{feedback}</div> : null}
       <div className="relative min-h-0 flex-1 bg-muted/30">
         {frameLoading ? (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
@@ -381,7 +375,7 @@ function DevServerPanelOpenBridge({ threadId }: PluginThreadHeaderActionProps) {
   return null;
 }
 
-function ServerOpenButtons({ server, onOpen }: { server: Server; onOpen: (server: Server) => void }) {
+function ServerOpenButtons({ server, onOpen, onCopy }: { server: Server; onOpen: (server: Server) => void; onCopy: (server: Server) => void }) {
   const url = serverUrl(server);
   const canOpenInPanel = Boolean(url && server.thread);
 
@@ -407,18 +401,18 @@ function ServerOpenButtons({ server, onOpen }: { server: Server; onOpen: (server
           <Button
             size="sm"
             className="w-7 rounded-l-none border-l border-background/20 px-0"
-            disabled={!url}
             aria-label="More ways to open dev server"
           >
             <HugeiconsIcon icon={ArrowDown01Icon} className="size-3.5" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" mobileTitle="Dev server actions">
-          <DropdownMenuItem onSelect={() => void copyUrl(url!)}>
+          <DropdownMenuItem onSelect={() => onCopy(server)}>
             <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
             Copy URL
           </DropdownMenuItem>
           <DropdownMenuItem
+            disabled={!url}
             onSelect={() => window.open(url!, "_blank", "noopener,noreferrer")}
           >
             <HugeiconsIcon icon={LinkSquare01Icon} aria-hidden="true" />
@@ -431,6 +425,7 @@ function ServerOpenButtons({ server, onOpen }: { server: Server; onOpen: (server
 }
 
 function DevServersPanel() {
+  const { copy, feedback } = useCopyServerUrl();
   const navigate = useBbNavigate();
   const { servers, loading, error, refresh } = useDevServers();
   const [promotion, setPromotion] = useState<Promotion | undefined>(undefined);
@@ -476,6 +471,7 @@ function DevServersPanel() {
       <div className="min-h-0 flex-1 overflow-auto">
         <PersistentServers promotion={promotion} onClosePromotion={() => setPromotion(undefined)} />
         <h2 className="border-b border-border bg-background px-4 py-2 text-sm font-medium">Thread dev servers</h2>
+        {feedback ? <div className="px-4">{feedback}</div> : null}
         {error ? <p className="px-4 py-3 text-sm text-destructive">{error}</p> : null}
         {!loading && !error && servers.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -494,7 +490,7 @@ function DevServersPanel() {
               <article key={`${server.environmentId}:${server.port}`} className="border-b border-border px-4 py-3" aria-label={`Thread server ${server.name}`}>
                 <div className="flex min-w-0 items-center gap-2">
                   <h3 className="min-w-0 flex-1 truncate text-sm font-medium">{server.name}</h3>
-                  <ServerOpenButtons server={server} onOpen={openInPanel} />
+                  <ServerOpenButtons server={server} onOpen={openInPanel} onCopy={(server) => void copy(server)} />
                   {server.command ? <Button size="sm" variant="outline" onClick={() => {
                     setPromotion({ command: server.command!, port: server.port, name: server.name });
                   }}>Promote</Button> : null}
