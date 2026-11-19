@@ -136,7 +136,7 @@ const STYLE = `
 [${COMPOSER_ATTR}]:not([data-follow-up-composer-expanded="true"]) [data-promptbox-action-row] { display: contents !important; }
 [${COMPOSER_ATTR}]:not([data-follow-up-composer-expanded="true"]) [data-promptbox-action-row] > :first-child { order: -1; }
 [${COMPOSER_ATTR}]:not([data-follow-up-composer-expanded="true"]) [data-promptbox-input-region] { flex: 1 1 auto; min-width: 0; order: 0; }
-[${COMPOSER_ATTR}]:not([data-follow-up-composer-expanded="true"]) [data-promptbox-action-row] > :last-child { order: 1; }
+[${COMPOSER_ATTR}]:not([data-follow-up-composer-expanded="true"]) [data-promptbox-action-row] > :last-child { order: 1; flex: 0 0 auto !important; justify-content: flex-end !important; }
 [${LABEL_ATTR}] { display: none !important; }
 /* User bubbles as wide as agent bubbles (bb caps them at 70%). */
 [${HUMAN_ATTR}] [data-message-column] > .ml-auto { max-width: 85% !important; }
