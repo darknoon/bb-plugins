@@ -69,6 +69,8 @@ const STYLE = `
   display: inline-flex !important; align-items: center; justify-content: center;
   width: 56px; height: 36px; border-radius: 18px;
   background: var(--surface-recessed) !important; animation: none !important;
+  /* bb's shine is an animated mask image sweeping across the span. */
+  -webkit-mask-image: none !important; mask-image: none !important; will-change: auto !important;
   font-size: 0 !important; color: transparent !important; -webkit-text-fill-color: transparent !important;
 }
 [${WORKING_ATTR}] > span::before {
