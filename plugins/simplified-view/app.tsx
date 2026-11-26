@@ -197,11 +197,25 @@ const finishedTurns = new Map<string, string | null>();
 
 function applyToDom(threadId: string, running: boolean, color: string | null): void {
   const prefix = `${threadId}:`;
-  const elements = [
-    ...document.querySelectorAll<HTMLElement>(TOP_LEVEL_ROWS),
-  ].filter((el) => el.getAttribute("data-timeline-row-id")!.startsWith(prefix));
+  const all = [...document.querySelectorAll<HTMLElement>(TOP_LEVEL_ROWS)];
+  const ownLists = new Set(
+    all
+      .filter((el) => el.getAttribute("data-timeline-row-id")!.startsWith(prefix))
+      .map((el) => el.closest('[data-timeline-row-list="top-level"]')),
+  );
+  // A just-sent message first renders as an unprefixed "optimistic-user-…"
+  // row until the server's row replaces it; style it as this thread's.
+  const rowId = (el: HTMLElement): string | null => {
+    const id = el.getAttribute("data-timeline-row-id")!;
+    if (id.startsWith(prefix)) return id;
+    if (id.startsWith("optimistic-") && ownLists.has(el.closest('[data-timeline-row-list="top-level"]'))) {
+      return prefix + id;
+    }
+    return null;
+  };
+  const elements = all.filter((el) => rowId(el) !== null);
   const inputs: TimelineRowInput[] = elements.map((el) => ({
-    id: el.getAttribute("data-timeline-row-id")!,
+    id: rowId(el)!,
     isMessageColumn:
       el.firstElementChild?.hasAttribute("data-message-column") ?? false,
     isSteer: [...el.querySelectorAll("[data-message-column] span")].some(
@@ -365,20 +379,13 @@ function SimplifiedTimeline() {
     style.setAttribute("data-bb-simplified-style", "");
     style.textContent = STYLE;
     document.head.append(style);
-    let frame = 0;
-    const schedule = () => {
-      if (frame !== 0) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        applyToDom(threadId, running, color);
-      });
-    };
-    const observer = new MutationObserver(schedule);
+    // Restyle in the observer callback (a microtask, before the next paint)
+    // so new rows never show a frame of bb's default style.
+    const observer = new MutationObserver(() => applyToDom(threadId, running, color));
     observer.observe(document.body, { childList: true, subtree: true });
     applyToDom(threadId, running, color);
     return () => {
       observer.disconnect();
-      if (frame !== 0) cancelAnimationFrame(frame);
       clearDom();
       style.remove();
     };
