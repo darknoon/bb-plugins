@@ -124,23 +124,6 @@ async function tailscaleStatus() {
   }
 }
 
-async function keychainStatus(file: string) {
-  try {
-    const result = (await readFile(file, "utf8")).trim();
-    if (result === "accessible") return { credentialPresent: true, accessible: true, detail: null };
-    if (result === "absent") return { credentialPresent: false, accessible: null, detail: "Claude Code credential was not found" };
-    if (result.startsWith("inaccessible:")) {
-      return { credentialPresent: true, accessible: false, detail: `LaunchAgent keychain probe exited ${result.slice("inaccessible:".length)}` };
-    }
-    return { credentialPresent: false, accessible: null, detail: "LaunchAgent keychain probe has not completed" };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { credentialPresent: false, accessible: null, detail: "LaunchAgent keychain probe has not run" };
-    }
-    throw error;
-  }
-}
-
 async function status(detail: string | null = null): Promise<StartupStatus> {
   const p = paths();
   const files = await readManaged(p.plist);
@@ -155,7 +138,9 @@ async function status(detail: string | null = null): Promise<StartupStatus> {
     runtimeManaged: await runtimeIsManaged(launchctl.pid),
     launchAgentPath: process.platform === "darwin" ? p.plist : null,
     command: npx ? `${npx} --yes bb-app@latest start` : null,
-    keychain: await keychainStatus(p.keychainStatus),
+    // Startup health is not provider authentication health. Never read a secret
+    // here: a broken ACL can prompt or block even when the user is logged in.
+    keychain: { credentialPresent: null, accessible: null, detail: "Not checked: Startup does not read credentials or request Keychain access." },
     tailscale: await tailscaleStatus(),
     detail: process.platform === "darwin" ? detail : "Automatic startup currently supports macOS LaunchAgents only.",
   };
@@ -166,26 +151,6 @@ async function atomicWrite(file: string, contents: string, mode: number) {
   await writeFile(temporary, contents, { encoding: "utf8", mode });
   await chmod(temporary, mode);
   await rename(temporary, file);
-}
-
-async function commandExitCode(file: string, args: string[]): Promise<number | null> {
-  return new Promise((resolve) => {
-    const child = spawn(file, args, { stdio: "ignore" });
-    child.once("error", () => resolve(null));
-    child.once("exit", (code) => resolve(code));
-  });
-}
-
-async function probeKeychain(file: string): Promise<void> {
-  const username = os.userInfo().username;
-  const query = ["find-generic-password", "-s", "Claude Code-credentials", "-a", username];
-  const present = await commandExitCode("/usr/bin/security", query);
-  if (present !== 0) {
-    await atomicWrite(file, "absent\n", 0o600);
-    return;
-  }
-  const accessible = await commandExitCode("/usr/bin/security", ["find-generic-password", "-w", "-s", "Claude Code-credentials", "-a", username]);
-  await atomicWrite(file, accessible === 0 ? "accessible\n" : `inaccessible:${accessible ?? "spawn"}\n`, 0o600);
 }
 
 function releaseGuardShell(runtimeFile: string): string {
@@ -206,7 +171,6 @@ function releaseGuardShell(runtimeFile: string): string {
 
 function wrapperScript(npx: string, tailscale: string | null): string {
   const p = paths();
-  const username = os.userInfo().username;
   const tailscaleCommand = tailscale ? `${shellQuote(tailscale)} serve --bg ${PORT} || true` : `echo "tailscale CLI not found; skipping Serve reconciliation" >&2`;
   return `#!/bin/zsh
 set -u
@@ -233,17 +197,8 @@ while bb_is_running; do
   (( waited_seconds += 1 ))
 done
 
-if /usr/bin/security find-generic-password -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then
-  if /usr/bin/security find-generic-password -w -s 'Claude Code-credentials' -a ${shellQuote(username)} >/dev/null 2>&1; then
-    echo accessible > ${shellQuote(p.keychainStatus)}
-  else
-    probe_exit=$?
-    echo "inaccessible:$probe_exit" > ${shellQuote(p.keychainStatus)}
-  fi
-else
-  echo absent > ${shellQuote(p.keychainStatus)}
-fi
-/bin/chmod 600 ${shellQuote(p.keychainStatus)}
+# Do not probe provider credentials during login or a restart. A Keychain
+# permission dialog must never block starting bb (including non-Claude agents).
 
 # Let the previous launcher remove its runtime record before claiming it.
 /bin/sleep 3
@@ -305,7 +260,6 @@ async function enable(): Promise<StartupStatus> {
   await mkdir(path.dirname(p.plist), { recursive: true, mode: 0o700 });
   await mkdir(path.dirname(p.stdout), { recursive: true, mode: 0o700 });
   await rm(p.handoffScript, { force: true });
-  await probeKeychain(p.keychainStatus);
   await atomicWrite(p.script, wrapperScript(npx, tailscale), 0o700);
   await atomicWrite(p.plist, launchAgentPlist(p, path.dirname(process.execPath)), 0o600);
   await run("/usr/bin/plutil", ["-lint", p.plist]);
@@ -346,9 +300,6 @@ async function scheduleHandoff(delaySeconds: number) {
   const p = paths();
   const current = await status();
   if (!current.enabled) throw new Error("Startup is not enabled; run `bb startup enable --no-handoff` first.");
-  if (current.keychain.credentialPresent && current.keychain.accessible !== true) {
-    throw new Error(`Refusing handoff because the LaunchAgent cannot read the existing Claude credential (${current.keychain.detail ?? "unknown error"}).`);
-  }
   const npx = await requireRuntimeNpx();
   const bootstrap = current.loaded
     ? ""

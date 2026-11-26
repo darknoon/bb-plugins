@@ -66,8 +66,12 @@ the same action restarts and updates bb through `bb-app@latest`. It checks all
 visible and hidden threads immediately before scheduling; running threads are
 listed and require an explicit **Restart anyway** confirmation.
 
-The LaunchAgent runs after the macOS user logs in, so the login keychain is
-available to bb's providers. It also reconciles `tailscale serve --bg 38886`
+The LaunchAgent runs after the macOS user logs in. Startup does not read Claude
+credentials, prompt for Keychain access, or block starting bb on provider auth.
+The status panel reports Claude Keychain access as **Not checked**; an actual
+provider request is needed to verify authentication. Old `keychain-status`
+probe files are ignored, not treated as current proof of access.
+It also reconciles `tailscale serve --bg 38886`
 when starting bb, if the Tailscale CLI is installed.
 
 A handoff pauses two seconds so the scheduling response can be delivered, then

@@ -8,7 +8,7 @@ const tailscaleStatusSchema = z.object({
 }).strict();
 
 const keychainStatusSchema = z.object({
-  credentialPresent: z.boolean(),
+  credentialPresent: z.boolean().nullable(),
   accessible: z.boolean().nullable(),
   detail: z.string().nullable(),
 }).strict();
