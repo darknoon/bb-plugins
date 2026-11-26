@@ -64,6 +64,10 @@ function readFlag(metadata: unknown): boolean {
 // --- Styles ----------------------------------------------------------------
 const STYLE = `
 /* bb's "Working..." line becomes a typing bubble: three pulsing dots. */
+/* bb grows and shrinks the Working line's wrapper over 180ms while the sent
+   message and the reply appear at full height at once, so the thread bounces.
+   Show and hide the typing bubble instantly, like a chat app. */
+[data-scroll-attached]:has([${LIST_ATTR}]) > div > div[style*="transition"] { transition: none !important; }
 [${WORKING_ATTR}] { padding-inline: 0 !important; }
 [${WORKING_ATTR}] > span {
   display: inline-flex !important; align-items: center; justify-content: center;
@@ -188,6 +192,8 @@ const STYLE = `
 `;
 
 // --- DOM pass ----------------------------------------------------------------
+// bb labels steers "Steer", and "Steer pending" until the server accepts one.
+const STEER_LABEL = /^Steer( pending)?$/;
 const TOP_LEVEL_ROWS =
   '[data-timeline-row-list="top-level"] > [data-timeline-items] > [data-timeline-row-id]';
 
@@ -219,7 +225,7 @@ function applyToDom(threadId: string, running: boolean, color: string | null): v
     isMessageColumn:
       el.firstElementChild?.hasAttribute("data-message-column") ?? false,
     isSteer: [...el.querySelectorAll("[data-message-column] span")].some(
-      (span) => span.textContent?.trim() === "Steer",
+      (span) => STEER_LABEL.test(span.textContent?.trim() ?? ""),
     ),
   }));
   if (!running) finishedTurns.set(threadId, latestTurn(threadId, inputs));
@@ -262,7 +268,7 @@ function applyToDom(threadId: string, running: boolean, color: string | null): v
     // The "Steer" label above mid-turn messages is noise here.
     if (next === "show") {
       for (const span of el.querySelectorAll<HTMLElement>("[data-message-column] span")) {
-        if (span.textContent?.trim() === "Steer" && span.parentElement && !span.parentElement.hasAttribute(LABEL_ATTR)) {
+        if (STEER_LABEL.test(span.textContent?.trim() ?? "") && span.parentElement && !span.parentElement.hasAttribute(LABEL_ATTR)) {
           span.parentElement.setAttribute(LABEL_ATTR, "");
         }
       }
@@ -280,6 +286,8 @@ function applyToDom(threadId: string, running: boolean, color: string | null): v
   for (const list of lists) {
     const scope = list.closest("[data-scroll-attached]") ?? list.parentElement;
     for (const span of scope?.querySelectorAll("div.min-h-7 > span.animate-shine") ?? []) {
+      // bb parks the outgoing line in a paused, collapsing wrapper; skip it.
+      if (span.closest('[class*="animation-play-state"]')) continue;
       working.add(span.parentElement!);
     }
   }
@@ -287,6 +295,7 @@ function applyToDom(threadId: string, running: boolean, color: string | null): v
     if (!working.has(el)) el.removeAttribute(WORKING_ATTR);
   }
   for (const el of working) if (!el.hasAttribute(WORKING_ATTR)) el.setAttribute(WORKING_ATTR, "");
+  holdTypingSpace(elements, inputs.map((input) => input.id), visibility, working);
   const listState = running ? "running" : "idle";
   // Tag the composer in the same pane as this thread's timeline.
   const composers = new Set<Element>();
@@ -326,7 +335,50 @@ function applyToDom(threadId: string, running: boolean, color: string | null): v
   }
 }
 
+// bb removes the typing bubble a frame or two before it adds the reply, which
+// dips the thread and brings it back. Keep the column at its height until a
+// new message row shows up (or a second passes) so both change in one frame.
+const HOLD_ATTR = "data-bb-simplified-hold";
+let typingColumn: { el: HTMLElement; height: number } | null = null;
+let hold: { el: HTMLElement; lastRow: string | undefined; timer: number } | null = null;
+
+function releaseHold(): void {
+  if (hold === null) return;
+  clearTimeout(hold.timer);
+  hold.el.style.removeProperty("min-height");
+  hold.el.removeAttribute(HOLD_ATTR);
+  hold = null;
+}
+
+function holdTypingSpace(
+  rows: HTMLElement[],
+  ids: string[],
+  visibility: Map<string, string>,
+  working: Set<Element>,
+): void {
+  // A new row renders empty for a frame before its text; wait for the text.
+  const lastRow = ids
+    .filter((id, i) => visibility.get(id) !== "hide" && rows[i]!.getBoundingClientRect().height > 2)
+    .at(-1);
+  if (hold !== null && (lastRow !== hold.lastRow || working.size > 0 || !hold.el.isConnected)) releaseHold();
+  const bubble = [...working][0];
+  const column = bubble?.closest<HTMLElement>("[data-scroll-attached] > div") ?? null;
+  if (column !== null) {
+    typingColumn = { el: column, height: column.getBoundingClientRect().height };
+  } else if (typingColumn !== null) {
+    const { el, height } = typingColumn;
+    typingColumn = null;
+    if (el.isConnected && hold === null) {
+      el.style.setProperty("min-height", `${height}px`);
+      el.setAttribute(HOLD_ATTR, "");
+      hold = { el, lastRow, timer: window.setTimeout(releaseHold, 1000) };
+    }
+  }
+}
+
 function clearDom(): void {
+  // The hold survives a clear: the effect re-runs when the turn ends, which is
+  // exactly when the hold is needed. It releases itself within a second.
   for (const el of document.querySelectorAll<HTMLElement>(`[${COMPOSER_ATTR}]`)) {
     el.removeAttribute(COMPOSER_ATTR);
     el.style.removeProperty(COLOR_VAR);
